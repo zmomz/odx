@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "odx"
+version = "0.0.1"
+description = "Odoo Developer Semantic Engine — static semantics for real Odoo codebases, surfaced through thin clients (CLI first)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Maaz" }]
+keywords = ["odoo", "static-analysis", "semantic-engine", "cli"]
+
+# Runtime deps are deliberately minimal for Phase 0/0.5.
+# The ENGINE core (parser/model/index) must stay dependency-light; heavier
+# tooling (lxml, jinja2) is pulled in only when the phase that needs it lands.
+dependencies = [
+    "typer>=0.12",          # CLI client (clients/cli only)
+    "rich>=13.0",           # rendering (clients only)
+]
+
+[project.optional-dependencies]
+xml = ["lxml>=5.0"]         # faster/robust XML parsing (Phase 3 parser)
+dev = [
+    "pytest>=8.0",
+    "lxml>=5.0",
+]
+
+[project.scripts]
+odx = "odx.clients.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["odx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --ignore=tests/corpus"
+# The Phase 0.5 corpus is real cloned Odoo code with its own (un-runnable-here)
+# test files; never collect them.
+norecursedirs = ["tests/corpus", "tests/spike/out", "*.egg", ".*", "build", "dist"]
+
+[tool.odx]
+# Marker table; real project config lives in .odx.toml written by `odx init`.
