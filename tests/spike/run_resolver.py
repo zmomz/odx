@@ -68,6 +68,10 @@ def run_resolver(corpus: Path) -> dict:
     comodel_absent = note_counts.get("comodel-absent", 0)
     comodel_merged = note_counts.get("comodel-via-override-merge", 0)
     comodel_runtime_ref = note_counts.get("comodel-runtime-ref", 0)
+    inverse_resolved = note_counts.get("inverse-resolved", 0)
+    inverse_nonrelational = note_counts.get("inverse-nonrelational", 0)
+    inverse_dangling = note_counts.get("inverse-dangling", 0)
+    inverse_outside = note_counts.get("inverse-comodel-outside-corpus", 0)
 
     return {
         "corpus": str(corpus),
@@ -83,6 +87,10 @@ def run_resolver(corpus: Path) -> dict:
         "comodel_absent_partial": comodel_absent,      # backlog-2 pile (now drained)
         "comodel_merged": comodel_merged,              # field-override attr merge lift
         "comodel_runtime_ref": comodel_runtime_ref,    # genuine Many2oneReference DYNAMICs
+        "inverse_resolved": inverse_resolved,          # one2many inverse verified relational
+        "inverse_nonrelational": inverse_nonrelational,  # reference-style Integer inverse (valid)
+        "inverse_dangling": inverse_dangling,          # inverse absent from a visible comodel (want 0)
+        "inverse_outside_corpus": inverse_outside,     # comodel out of corpus, not downgraded
         "notes": dict(note_counts),
     }
 
@@ -109,6 +117,10 @@ def main(argv: list[str]) -> int:
     print(f"  comodel-absent PARTIAL:  {r['comodel_absent_partial']}  (backlog-2, drained)")
     print(f"  override-merge lift:     {r['comodel_merged']}  (attr merge)")
     print(f"  Many2oneRef DYNAMIC:     {r['comodel_runtime_ref']}  (genuine runtime)")
+    print(f"  one2many inverse OK:     {r['inverse_resolved']}  (verified relational)")
+    print(f"  inverse non-relational:  {r['inverse_nonrelational']}  (reference-style, valid)")
+    print(f"  inverse dangling (want 0):{r['inverse_dangling']}")
+    print(f"  inverse comodel out-of-corpus: {r['inverse_outside_corpus']}")
     return 0
 
 

@@ -55,8 +55,23 @@ look cautious). On the corpus this drained the 80 comodel-absent PARTIALs to 0
 (74 -> STATIC, 6 -> DYNAMIC) and, by restoring `related=` that overrides dropped,
 rescued 11 fields the old resolver left UNRESOLVED.
 
-Backlog still open after this pass (Phase 0.5 catalog): one2many inverse discovery
-by scanning the comodel (6 sites).
+## One2many inverse discovery (backlog item 3 — done)
+
+A One2many names its comodel and an `inverse_name` (the Many2one on the comodel
+pointing back). The parser reads a literal `inverse_name` but never verified it
+names a real relational field on the comodel. `_verify_inverses` (pass 2.5) does,
+against the comodel's EFFECTIVE fields — the inverse is frequently inherited or
+delegated onto the comodel, not declared there (18 such live corpus sites), so it
+reuses `_EffectiveFields`, not raw defs, and reads the merged `inverse_name`.
+Honest in both directions: present+relational -> STATIC (`inverse-resolved`);
+present but a non-relational Integer soft-FK (the legitimate reference-style
+inverse, e.g. `res_id`/`sms_id_int`) -> left STATIC + `inverse-nonrelational`;
+genuinely absent from a fully-visible comodel -> UNRESOLVED + `inverse-dangling`;
+comodel outside the corpus -> known literal, not downgraded, `inverse-comodel-outside-corpus`.
+Modelling `delegate=True` in the parser (the modern `_inherits` spelling)
+dissolved the corpus's one apparent dangling inverse — it was reachable through a
+delegated field all along, so marking it UNRESOLVED would have been a false
+accusation. The field-resolution backlog is now closed.
 """
 
 from __future__ import annotations
@@ -138,6 +153,7 @@ class ModelResolver:
         _settle_comodels(work)                                 # pass 1.6 — re-derive comodel state post-merge
         eff = _EffectiveFields(work)                           # inheritance closure (memoized)
         self._resolve_related(work, eff)                       # pass 2 — worklist fixpoint
+        self._verify_inverses(work, eff)                       # pass 2.5 — one2many inverse discovery
         return self._materialize(work, eff)                    # pass 3 — freeze public contracts
 
     def resolve_one(self, name: str) -> ResolvedModel | None:
@@ -290,6 +306,60 @@ class ModelResolver:
                 return ("dynamic", None, "related-through-dynamic")
             return ("unresolved", None, f"related-hop-unresolved:{seg}")
         return ("unresolved", None, "related-empty")  # unreachable; keeps the type total
+
+    # ------------------------------------------------------------------ #
+    # pass 2.5 — one2many inverse discovery (Phase 0.5 backlog item 3)
+    #
+    # A One2many names its comodel and an `inverse_name` (the Many2one on the
+    # comodel that points back). The parser reads `inverse_name` when it's a
+    # literal but never checks it names a real relational field on the comodel.
+    # This pass verifies it against the comodel's EFFECTIVE fields — because the
+    # inverse Many2one is frequently inherited (`_inherit`) or delegated
+    # (`_inherits`/`delegate=True`) onto the comodel, not declared on it directly
+    # (18 such live corpus sites). It reuses `_EffectiveFields` (the same merged/
+    # inherited closure the related fixpoint walks) and reads the *merged*
+    # `inverse_name`, so an override that dropped `inverse_name` (which
+    # `_merge_field` restores from the base One2many) is verified against the
+    # restored value, not the raw one.
+    #
+    # Honest in both directions (constraint #4): the field DISCOVERS state, it
+    # does not accuse (RFC §6 — the analyzer turns a note into a Diagnostic).
+    #   - inverse present & relational (Many2one/Many2oneReference)  -> STATIC,
+    #     note `inverse-resolved`.
+    #   - inverse present but NON-relational (an Integer soft-FK: `res_id`/
+    #     `sms_id_int`/`parent_res_id` paired with a res_model or a deleted-record
+    #     id — a legitimate Odoo reference-style inverse, 6 live) -> left STATIC
+    #     (the comodel is solidly known; fabricating a defect would be dishonest),
+    #     note `inverse-nonrelational` for the analyzer to weigh.
+    #   - inverse names a field ABSENT from the (fully visible) comodel -> the one
+    #     provable defect: UNRESOLVED, note `inverse-dangling` (+ the missing name).
+    #   - comodel outside the corpus -> we can't see its fields, so we can't prove
+    #     the inverse dangles; the comodel itself is a known literal, so we do NOT
+    #     downgrade it (that would fabricate uncertainty). Note
+    #     `inverse-comodel-outside-corpus`.
+    #   - dynamic inverse / dynamic comodel -> already DYNAMIC (parser); skipped.
+    # ------------------------------------------------------------------ #
+    def _verify_inverses(self, work: dict[str, _Work], eff: "_EffectiveFields") -> None:
+        for wm in work.values():
+            for rf in wm.own.values():
+                if rf.ftype != "One2many" or rf.inverse_name is None:
+                    continue                                   # computed/related O2M: nothing to verify
+                if rf.resolution is Resolution.DYNAMIC:
+                    continue                                   # dynamic-inverse/-comodel: already honest
+                if rf.comodel is None:
+                    continue                                   # comodel dimension handled elsewhere
+                if rf.comodel not in work:                     # comodel defined outside the corpus
+                    rf.notes.append("inverse-comodel-outside-corpus")
+                    continue
+                inv = eff.lookup(rf.comodel, rf.inverse_name)  # EFFECTIVE (own+inherited+delegated)
+                if inv is None:
+                    rf.resolution = Resolution.UNRESOLVED
+                    rf.notes.append("inverse-dangling")
+                    rf.notes.append(f"inverse-missing:{rf.inverse_name}")
+                elif inv.rawfield.ftype in ("Many2one", "Many2oneReference"):
+                    rf.notes.append("inverse-resolved")
+                else:
+                    rf.notes.append("inverse-nonrelational")
 
     # ------------------------------------------------------------------ #
     # pass 3 — freeze the public, immutable contracts

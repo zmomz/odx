@@ -486,6 +486,192 @@ def test_many2one_reference_stays_dynamic_not_fabricated():
     assert "comodel-runtime-ref" in f.notes
 
 
+# --------------------------------------------------------------------------- #
+# ONE2MANY INVERSE DISCOVERY (Phase 0.5 backlog item 3).
+#
+# A One2many names its comodel and an `inverse_name` (the Many2one on the comodel
+# pointing back). The resolver verifies that inverse against the comodel's
+# EFFECTIVE fields — the inverse Many2one is frequently inherited or delegated
+# onto the comodel, not declared there (18 such live corpus sites). These fixtures
+# are built around WHICH configuration resolves WHICH way, not aggregate count:
+# each is a distinct shape the confirm-live-state pass surfaced (or that a naive
+# raw-own-fields lookup would get wrong). Honest in both directions — the sole
+# provable defect (a truly-absent inverse) is UNRESOLVED; everything undecidable
+# is noted, never fabricated into a defect.
+# --------------------------------------------------------------------------- #
+def test_inverse_on_own_field_of_comodel_resolves():
+    # the common case (599 live): inverse names a Many2one declared ON the comodel.
+    src = ("class Order(models.Model):\n"
+           "    _name = 'sale.order'\n"
+           "    line_ids = fields.One2many('sale.order.line', 'order_id')\n"
+           "class Line(models.Model):\n"
+           "    _name = 'sale.order.line'\n"
+           "    order_id = fields.Many2one('sale.order')\n")
+    _r, models = _resolve({"a": src})
+    f = models["sale.order"].fields["line_ids"]
+    assert f.resolution is Resolution.STATIC
+    assert "inverse-resolved" in f.notes
+
+
+def test_inverse_reachable_only_through_inherit_on_comodel():
+    # requirement #2 (14 live): the inverse Many2one is INHERITED onto the comodel
+    # via `_inherit`, not declared on it. A lookup over the comodel's RAW own
+    # fields would miss it and cry dangling; the EFFECTIVE closure finds it.
+    mixin = ("class Mixin(models.Model):\n"
+             "    _name = 'order.mixin'\n"
+             "    order_id = fields.Many2one('sale.order')\n")
+    line = ("class Line(models.Model):\n"
+            "    _name = 'sale.order.line'\n"
+            "    _inherit = 'order.mixin'\n"
+            "    name = fields.Char()\n")
+    order = ("class Order(models.Model):\n"
+             "    _name = 'sale.order'\n"
+             "    line_ids = fields.One2many('sale.order.line', 'order_id')\n")
+    _r, models = _resolve({"mixin": mixin, "line": line, "order": order},
+                          {"mixin": [], "line": ["mixin"], "order": ["line"]})
+    f = models["sale.order"].fields["line_ids"]
+    assert f.resolution is Resolution.STATIC
+    assert "inverse-resolved" in f.notes
+    assert "inverse-dangling" not in f.notes
+
+
+def test_inverse_reachable_only_through_delegation_on_comodel():
+    # the live `test.inherit.daughter` shape, distilled: the inverse Many2one is a
+    # DELEGATED field on the comodel (`delegate=True` -> `_inherits`). Without
+    # modelling delegation this reads as dangling — the exact false accusation the
+    # confirm-live-state pass caught. The comodel delegates to a mixin that (via an
+    # extension) carries the back-pointer.
+    mixin = ("class Mixin(models.Model):\n"
+             "    _name = 'daughter.mixin'\n"
+             "    name = fields.Char()\n")
+    mixin_ext = ("class MixinExt(models.Model):\n"
+                 "    _inherit = 'daughter.mixin'\n"
+                 "    parent_id = fields.Many2one('res.partner')\n")
+    daughter = ("class Daughter(models.Model):\n"
+                "    _name = 'test.daughter'\n"
+                "    template_id = fields.Many2one('daughter.mixin', delegate=True, required=True)\n")
+    partner = ("class Partner(models.Model):\n"
+               "    _inherit = 'res.partner'\n"
+               "    daughter_ids = fields.One2many('test.daughter', 'parent_id')\n")
+    _r, models = _resolve(
+        {"m": mixin, "mx": mixin_ext, "d": daughter, "p": partner},
+        {"m": [], "mx": ["m"], "d": ["mx"], "p": ["d"]},
+    )
+    # delegation is modelled: the daughter delegates to the mixin
+    assert models["test.daughter"].delegates == ["daughter.mixin"]
+    f = models["res.partner"].fields["daughter_ids"]
+    assert f.resolution is Resolution.STATIC
+    assert "inverse-resolved" in f.notes
+    assert "inverse-dangling" not in f.notes
+
+
+def test_inverse_name_restored_by_merge_is_verified():
+    # inverse-only-after-merge: an override of the One2many restates only `string`,
+    # dropping `inverse_name`. `_merge_field` restores it from the base One2many;
+    # verification must run on the MERGED inverse_name, not the (absent) raw one.
+    base = ("class Order(models.Model):\n"
+            "    _name = 'sale.order'\n"
+            "    line_ids = fields.One2many('sale.order.line', 'order_id')\n"
+            "class Line(models.Model):\n"
+            "    _name = 'sale.order.line'\n"
+            "    order_id = fields.Many2one('sale.order')\n")
+    override = ("class Order(models.Model):\n"
+                "    _inherit = 'sale.order'\n"
+                "    line_ids = fields.One2many(string='Lines')\n")
+    _r, models = _resolve({"a": base, "ext": override},
+                          {"a": [], "ext": ["a"]})
+    f = models["sale.order"].fields["line_ids"]
+    assert f.info.attributes["inverse_name"] == "order_id"   # restored by merge
+    assert f.resolution is Resolution.STATIC
+    assert "inverse-resolved" in f.notes
+
+
+def test_dangling_inverse_is_unresolved_not_guessed():
+    # the sole provable defect: the inverse names a field ABSENT from a fully
+    # visible comodel. UNRESOLVED + a reason note the analyzer can turn into a
+    # Diagnostic (RFC §6) — never silently accepted as STATIC.
+    src = ("class Order(models.Model):\n"
+           "    _name = 'sale.order'\n"
+           "    line_ids = fields.One2many('sale.order.line', 'no_such_field')\n"
+           "class Line(models.Model):\n"
+           "    _name = 'sale.order.line'\n"
+           "    name = fields.Char()\n")
+    _r, models = _resolve({"a": src})
+    f = models["sale.order"].fields["line_ids"]
+    assert f.resolution is Resolution.UNRESOLVED
+    assert "inverse-dangling" in f.notes
+    assert "inverse-missing:no_such_field" in f.notes
+
+
+def test_nonrelational_inverse_stays_static_with_honest_note():
+    # the reference-style inverse (6 live): the inverse names a REAL field on the
+    # comodel that is an Integer soft-FK (`res_id`/`sms_id_int` — paired with a
+    # res_model or a deleted-record id). A legitimate Odoo pattern: the comodel is
+    # solidly known, so we do NOT fabricate a defect. STATIC + an honest note the
+    # analyzer can weigh — honest in the "don't invent uncertainty" direction.
+    src = ("class Host(models.Model):\n"
+           "    _name = 'attach.host'\n"
+           "    attachment_ids = fields.One2many('ir.attachment', 'res_id')\n"
+           "class Attach(models.Model):\n"
+           "    _name = 'ir.attachment'\n"
+           "    res_model = fields.Char()\n"
+           "    res_id = fields.Integer()\n")
+    _r, models = _resolve({"a": src})
+    f = models["attach.host"].fields["attachment_ids"]
+    assert f.resolution is Resolution.STATIC
+    assert "inverse-nonrelational" in f.notes
+    assert "inverse-dangling" not in f.notes
+
+
+def test_inverse_comodel_outside_corpus_not_downgraded():
+    # the comodel is a known literal but its module isn't in the corpus, so we
+    # can't see its fields to prove the inverse dangles. We know the comodel — so
+    # downgrading would fabricate uncertainty. Left STATIC + an honest note.
+    src = ("class Order(models.Model):\n"
+           "    _name = 'sale.order'\n"
+           "    line_ids = fields.One2many('external.model.not.here', 'order_id')\n")
+    _r, models = _resolve({"a": src})
+    f = models["sale.order"].fields["line_ids"]
+    assert f.resolution is Resolution.STATIC
+    assert "inverse-comodel-outside-corpus" in f.notes
+    assert "inverse-dangling" not in f.notes
+
+
+def test_dynamic_inverse_stays_dynamic_and_unverified():
+    # inverse_name is a runtime expression -> the parser marks the field DYNAMIC
+    # ("dynamic-inverse"); verification is skipped, never forced to a verdict.
+    src = ("class Order(models.Model):\n"
+           "    _name = 'sale.order'\n"
+           "    line_ids = fields.One2many('sale.order.line', SOME_VAR)\n"
+           "class Line(models.Model):\n"
+           "    _name = 'sale.order.line'\n"
+           "    order_id = fields.Many2one('sale.order')\n")
+    _r, models = _resolve({"a": src})
+    f = models["sale.order"].fields["line_ids"]
+    assert f.resolution is Resolution.DYNAMIC
+    assert "dynamic-inverse" in f.notes
+    assert "inverse-resolved" not in f.notes
+    assert "inverse-dangling" not in f.notes
+
+
+def test_delegate_true_field_stays_a_real_many2one():
+    # `delegate=True` establishes delegation but the field itself is still a real
+    # Many2one on the model — it must not vanish or lose its comodel.
+    src = ("class Cron(models.Model):\n"
+           "    _name = 'ir.cron'\n"
+           "    server_id = fields.Many2one('ir.actions.server', delegate=True, required=True)\n"
+           "class Server(models.Model):\n"
+           "    _name = 'ir.actions.server'\n"
+           "    name = fields.Char()\n")
+    _r, models = _resolve({"a": src})
+    cron = models["ir.cron"]
+    assert cron.delegates == ["ir.actions.server"]
+    assert cron.fields["server_id"].info.type == "Many2one"
+    assert cron.fields["server_id"].info.attributes["comodel"] == "ir.actions.server"
+    # the delegate's fields are exposed on the delegating model
+    assert cron.fields["name"].provenance.via == "_inherits"
+
+
 def test_type_changing_override_drops_stale_comodel():
     # A Many2one redefined as a Char must NOT drag the comodel onto a scalar.
     base = ("class M(models.Model):\n"

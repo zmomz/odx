@@ -70,6 +70,10 @@ def _str_const(node: ast.AST) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
+def _is_true_const(node: ast.AST | None) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
 def _str_list(node: ast.AST) -> list[str] | None:
     if isinstance(node, (ast.List, ast.Tuple)):
         out = []
@@ -194,7 +198,18 @@ def _parse_class(node: ast.ClassDef, module: str, file: Path) -> RawModel:
                     continue
                 ft = _field_type(val)
                 if ft:
-                    rm.fields.append(_extract_field(tgt, target, val, ft, file))
+                    rf = _extract_field(tgt, target, val, ft, file)
+                    rm.fields.append(rf)
+                    # `Many2one(comodel, delegate=True)` is the modern spelling of
+                    # `_inherits = {comodel: field}` (Odoo reflects it into _inherits;
+                    # see odoo/models.py "reflect fields with delegate=True"). Model
+                    # it as delegation so the delegate's fields resolve onto this
+                    # model — without it, an inverse pointing at a delegated field
+                    # reads as dangling (a false accusation). Only when the comodel
+                    # is a literal; a runtime comodel already made the field DYNAMIC.
+                    if (ft == "Many2one" and rf.comodel is not None
+                            and _is_true_const(_kwargs(val).get("delegate"))):
+                        rm.inherits.setdefault(rf.comodel, tgt)
 
         elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
             fn = stmt.value.func

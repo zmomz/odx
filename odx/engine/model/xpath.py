@@ -8,15 +8,25 @@ XPath dialect does not error — it silently fails to match, producing a false
 
 So this module is a gate with two hard rules:
   1. The dialect must be provably complete: every Odoo XPath extension is either
-     implemented here or explicitly listed as unsupported.
+     implemented here or explicitly listed as unsupported. `assert_complete()`
+     makes the first half testable; `unsupported_functions()` the second.
   2. An unimplemented construct must ANNOUNCE ITSELF as an engine limitation
-     (Resolution.DYNAMIC / a distinct marker), never degrade to a silent
-     no-match. The `view.xpath-target-missing` analyzer (Phase 4) must not run
-     against results produced with an incomplete dialect (see docs/PHASE3.md
+     (via `unsupported_functions()` -> `Resolution.DYNAMIC`), never degrade to a
+     silent no-match. The `view.xpath-target-missing` analyzer (Phase 4) must not
+     run against results produced with an incomplete dialect (see docs/PHASE3.md
      "applicator-before-analyzer").
 
+**Audit (Phase 3, live corpus).** Sorting every function name that appears in a
+real inheritance locator across the corpus surfaced exactly one non-XPath-1.0
+name: `hasclass`. Odoo registers no other custom XPath function for view
+inheritance (it uses stock XPath 1.0 plus `hasclass`; see
+`odoo/addons/base/models/ir_ui_view.py`). So the known dialect is XPath 1.0 +
+`hasclass`, and it is complete. `ODOO_XPATH_FUNCTIONS` is kept authoritative so a
+future addition is a one-line change that the gate test immediately enforces.
+
 Also handles data-file id interpolation `%(xmlid)d` / `%(xmlid)s`, which must be
-resolved to record ids before an expr is evaluated (Phase 0.6 straggler).
+resolved to record ids before an expr is evaluated (Phase 0.6 straggler; view
+backlog item 3).
 """
 
 from __future__ import annotations
@@ -24,17 +34,51 @@ from __future__ import annotations
 import re
 from lxml import etree
 
-# The known surface of Odoo's XPath dialect. Keep this list authoritative:
-# audit against Odoo source per target version and mark each implemented or not.
-# (Sourced initially from Odoo's `base.models.ir_ui_view` xpath usage.)
-ODOO_XPATH_FUNCTIONS = {
+# The known surface of Odoo's XPath dialect beyond XPath 1.0. Authoritative:
+# every entry is either "implemented" (registered by register_dialect and asserted
+# by assert_complete) or "unsupported" (surfaced by unsupported_functions ->
+# DYNAMIC, never a silent no-match). Audited against Odoo's ir_ui_view usage.
+ODOO_XPATH_FUNCTIONS: dict[str, str] = {
     "hasclass": "implemented",       # node has all given CSS classes
-    # candidates to audit & implement/mark per version:
-    # "hasclass"-adjacent helpers, custom functions registered by other addons...
 }
+
+# Stock XPath 1.0 function library — used to tell "a real Odoo extension we must
+# implement" apart from "an ordinary XPath function lxml already provides". A name
+# here is never flagged unsupported (the old list was partial — missing e.g.
+# `name`, `local-name`, `floor` — which would false-flag ordinary locators).
+XPATH_1_0_FUNCTIONS: frozenset[str] = frozenset({
+    # node-set
+    "last", "position", "count", "id", "local-name", "namespace-uri", "name",
+    # string
+    "string", "concat", "starts-with", "contains", "substring-before",
+    "substring-after", "substring", "string-length", "normalize-space",
+    "translate",
+    # boolean
+    "boolean", "not", "true", "false", "lang",
+    # number
+    "number", "sum", "floor", "ceiling", "round",
+    # operators that regex-match the `name(` shape but are XPath keywords
+    "and", "or", "text", "node", "comment", "processing-instruction", "div", "mod",
+})
 
 # `%(module.record)d` / `%(module.record)s` id interpolation in data files.
 _INTERP = re.compile(r"%\((?P<xmlid>[\w.]+)\)[ds]")
+
+# names used as a function call in an expr: `foo(` (captures `foo`)
+_FN_CALL = re.compile(r"([A-Za-z_][\w-]*)\s*\(")
+
+
+def _implementations() -> dict:
+    """The extension functions register_dialect installs. Single source of truth:
+    both register_dialect and assert_complete read this, so the registered set and
+    the 'implemented' catalog can never silently diverge."""
+
+    def hasclass(context, *classes):
+        node = context.context_node
+        node_classes = frozenset((node.get("class") or "").split())
+        return all(c in node_classes for c in classes)
+
+    return {"hasclass": hasclass}
 
 
 def register_dialect() -> None:
@@ -44,13 +88,41 @@ def register_dialect() -> None:
     (`tests/spike/run_xml.py`) to lift locator resolution 77% -> 84.5%.
     """
     ns = etree.FunctionNamespace(None)
+    for name, fn in _implementations().items():
+        ns[name] = fn
 
-    def hasclass(context, *classes):
-        node = context.context_node
-        node_classes = frozenset((node.get("class") or "").split())
-        return all(c in node_classes for c in classes)
 
-    ns["hasclass"] = hasclass
+def implemented_functions() -> list[str]:
+    """Dialect extensions marked implemented in the catalog."""
+    return sorted(n for n, s in ODOO_XPATH_FUNCTIONS.items() if s == "implemented")
+
+
+def registered_functions() -> list[str]:
+    """Dialect extensions register_dialect actually installs."""
+    return sorted(_implementations())
+
+
+def assert_complete() -> None:
+    """The completeness GATE (rule 1), callable from a test.
+
+    Fails if the catalog and the implementations disagree in EITHER direction:
+      - an entry marked "implemented" that register_dialect doesn't install
+        (a silent no-match waiting to happen), or
+      - a function register_dialect installs that the catalog doesn't record as
+        "implemented" (drift the audit wouldn't catch), or
+      - a catalog value that is neither "implemented" nor "unsupported".
+    """
+    for name, status in ODOO_XPATH_FUNCTIONS.items():
+        if status not in ("implemented", "unsupported"):
+            raise AssertionError(
+                f"dialect entry {name!r} has unknown status {status!r} "
+                "(must be 'implemented' or 'unsupported')")
+    impl = set(implemented_functions())
+    reg = set(registered_functions())
+    if impl != reg:
+        raise AssertionError(
+            "XPath dialect incomplete: catalog 'implemented' set "
+            f"{sorted(impl)} != registered set {sorted(reg)}")
 
 
 def resolve_interpolation(expr: str, xmlid_to_id) -> str:
@@ -65,14 +137,20 @@ def resolve_interpolation(expr: str, xmlid_to_id) -> str:
     )
 
 
-def unsupported_functions(expr: str) -> list[str]:
-    """Names used in `expr` that are NOT in our known dialect.
+def has_interpolation(expr: str | None) -> bool:
+    """Whether an expr carries a `%(xmlid)d/s` reference (must be resolved before
+    evaluation; view backlog item 3)."""
+    return bool(expr) and _INTERP.search(expr) is not None
 
-    A non-empty result means: do not trust a no-match as 'target missing' —
-    this is an engine limitation to surface, per rule 2 above.
+
+def unsupported_functions(expr: str | None) -> list[str]:
+    """Names used in `expr` that are NOT in our known dialect (rule 2).
+
+    "Known" = XPath 1.0 built-ins plus dialect entries marked "implemented". A
+    dialect entry marked "unsupported", or a name from nowhere, IS returned. A
+    non-empty result means: do not trust a no-match as 'target missing' — this is
+    an engine limitation to surface (-> Resolution.DYNAMIC), not the user's bug.
     """
-    used = set(re.findall(r"([A-Za-z_][\w-]*)\s*\(", expr or ""))
-    used -= {"and", "or", "not", "text", "contains", "starts-with",
-             "last", "position", "count", "normalize-space", "concat",
-             "substring", "string", "boolean", "number", "translate"}  # XPath 1.0
-    return sorted(n for n in used if n not in ODOO_XPATH_FUNCTIONS)
+    used = set(_FN_CALL.findall(expr or ""))
+    known = XPATH_1_0_FUNCTIONS | set(implemented_functions())
+    return sorted(n for n in used if n not in known)

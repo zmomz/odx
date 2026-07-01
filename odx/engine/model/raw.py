@@ -84,11 +84,22 @@ class RawView:
     location: Location | None = None
     model: str | None = None
     inherit_ref: str | None = None    # normalized parent xmlid
-    mode: str | None = None           # primary | extension
+    mode: str | None = None           # primary | extension (effective, defaulted)
+    priority: int = 16                # Odoo `priority`; secondary apply-order key
     is_template: bool = False
     arch = None                       # parsed arch element (lxml), or None
     locators: list[Locator] = field(default_factory=list)
     resolution: Resolution = Resolution.STATIC   # DYNAMIC if inherit_id via eval
+
+    @property
+    def is_primary(self) -> bool:
+        """A primary view starts its own arch tree; an extension view is applied
+        onto its parent's. Odoo default: primary iff it has no `inherit_id`."""
+        return self.mode == "primary" or (self.mode is None and self.inherit_ref is None)
+
+    @property
+    def is_inheriting(self) -> bool:
+        return self.inherit_ref is not None
 
 
 @dataclass

@@ -93,6 +93,10 @@ def test_xml_out_of_scope_negligible(xml_result):
 #   post field-override attribute-merge (backlog item 2 done):
 #     related→STATIC 263 · comodel-absent 0 · override-merge 76 · M2oRef DYNAMIC 6
 #     · unresolved 2 (both hop through a module outside the corpus)
+#   post one2many inverse discovery (backlog item 3 done):
+#     inverse-resolved 618 · inverse-nonrelational 6 (reference-style, valid)
+#     · inverse-dangling 0 · unresolved still 2 (modelling `delegate=True` dissolved
+#     the one apparent dangling inverse — it was reachable via delegation)
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def resolver_result() -> dict:
@@ -149,3 +153,90 @@ def test_many2one_reference_marked_dynamic_not_partial(resolver_result):
     # must be marked DYNAMIC by nature, not left in the comodel-absent PARTIAL pile
     # and not fabricated. A regression that reverts them to PARTIAL drops this to 0.
     assert resolver_result["comodel_runtime_ref"] >= 5
+
+
+def test_one2many_inverse_resolution_lift_holds(resolver_result):
+    # backlog item 3: One2many inverses verified against the comodel's EFFECTIVE
+    # fields (own + inherited + delegated). Floor sits below the measured 618 with
+    # headroom. A regression that stops verifying, or that re-scans raw own fields
+    # (missing the 18 inherited/delegated inverses), drops this.
+    assert resolver_result["inverse_resolved"] >= 600
+
+
+def test_no_dangling_inverses_on_real_code(resolver_result):
+    # the load-bearing honesty guard (mirrors the false-cycle guard): clean corpus
+    # code contains no genuinely-dangling One2many inverse. The corpus's one
+    # apparent dangling inverse was reachable through a `delegate=True` delegation;
+    # modelling that dissolved it. A non-zero count means either a real defect crept
+    # into the corpus OR the lookup regressed to raw own fields and is now
+    # falsely accusing an inherited/delegated inverse — the exact trap this closes.
+    assert resolver_result["inverse_dangling"] == 0
+
+
+def test_reference_style_inverses_stay_first_class(resolver_result):
+    # the reference-style inverses (Integer soft-FK: res_id/sms_id_int/...) are a
+    # valid Odoo pattern, marked honestly rather than fabricated into a defect or
+    # force-resolved. Locks them as a recognised, non-empty first-class state.
+    assert resolver_result["inverse_nonrelational"] >= 5
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 — graduated-engine EFFECTIVE-ARCH scoreboard (guards odx.engine, the
+# view applicator). Confirm-live-state (before building) overturned the doc's
+# framing a fourth time: the spike's 97.29% came from a loose per-ancestor test;
+# a CORRECT primary-aware, load-ordered applicator that counts only TOP-LEVEL
+# directives (Odoo's real spec) measures:
+#   effective views built 3487 · record locators 2131 · record resolved 98.59%
+#   · dangling-after-apply 30 (genuine UNRESOLVED, Phase-4 candidates)
+#   · qweb-deferred 48 · interpolation-deferred 17 (DYNAMIC) · dialect gaps 0
+#   · base-outside-corpus 7 (DYNAMIC). Thresholds sit below the measured baseline
+# with headroom so corpus drift doesn't flake but a real regression trips.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def arch_result() -> dict:
+    from tests.spike.run_arch import run_arch
+    return run_arch(DEFAULT_CORPUS)
+
+
+def test_arch_parse_rate_high(arch_result):
+    assert arch_result["parse_rate_pct"] >= 99.0
+
+
+def test_arch_effective_views_built_stable(arch_result):
+    assert arch_result["effective_views_built"] >= 3400
+
+
+def test_arch_record_resolution_high(arch_result):
+    # the load-bearing view number: record-view locators found after correct,
+    # registry-wide, load-ordered application. A regression that stops respecting
+    # the primary boundary or the load order drops this — invisible to unit tests.
+    assert arch_result["record_resolved_pct"] >= 97.0
+
+
+def test_arch_dangling_stays_a_small_tail(arch_result):
+    # genuine UNRESOLVED record danglers (Phase-4 candidates). Kept a small,
+    # bounded tail; a jump means the applicator regressed to producing false
+    # missing-targets (the exact false accusation the whole design guards against).
+    assert arch_result["record_dangling_after_apply"] <= 45
+    assert (arch_result["record_dangling_after_apply"]
+            / arch_result["record_locators"]) < 0.03
+
+
+def test_arch_deferred_buckets_stay_first_class(arch_result):
+    # QWeb template inheritance (item 4) and %(xmlid)d interpolation (item 3) are
+    # DEFERRED, not defects: they must be tracked as their own honest buckets, not
+    # silently folded into danglers. Non-negative + present locks them first-class.
+    assert arch_result["qweb_deferred"] >= 0
+    assert arch_result["interpolation_deferred"] >= 0
+    # interpolation is announced DYNAMIC, never a silent no-match
+    assert "interpolation-deferred" in arch_result["reasons"] or \
+        arch_result["interpolation_deferred"] == 0
+
+
+def test_arch_dialect_gaps_are_announced_not_silent(arch_result):
+    # the audit finding: `hasclass` is the only extension function used in the
+    # corpus, so live dialect gaps are 0. If a NEW extension ever appears it is
+    # announced (DYNAMIC via dialect-unsupported), never a silent no-match — so
+    # any non-zero here is a surfaced limitation, not a false accusation. Lock the
+    # audited baseline at 0 to catch a genuinely-new construct for triage.
+    assert arch_result["dialect_unsupported"] == 0

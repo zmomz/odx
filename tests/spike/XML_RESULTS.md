@@ -2,6 +2,17 @@
 
 **Decision: GO.** ✅
 
+> **Phase 3 correction (added when the applicator was built).** The 97.29% below
+> is the *spike's* number, from a loose proxy — "does the locator's target exist
+> anywhere in the view's ancestor-chain raw arches". The graduated engine
+> applicator (`odx.engine.model.arch`) measures the honest number: **98.59%** of
+> record-view locators resolve after *correct* registry-wide, load-ordered
+> application — but only once two things the spike glossed are respected: the
+> `mode="primary"` cohort boundary (residual 234 → 79) and counting only
+> top-level arch children as directives (Odoo's real spec). QWeb templates and
+> `%(xmlid)d` interpolation are split out as deferred first-class buckets, not
+> folded into this rate. See `docs/PHASE3.md` View-resolution backlog items 1–2.
+
 Phase 0.5 validated the *cleaner* half (Python-side model/field/`_inherit`
 resolution). This spike validates the messier half the RFC §7 index depends on —
 resolving `inherit_id` xml-ids across modules and evaluating `xpath`/`position`

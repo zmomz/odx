@@ -44,13 +44,13 @@ everything sits on it. The rest are typed skeletons graduating from the spikes.
 |---|---|---|
 | `loadorder/` | manifest graph, topo `load_order()`, `dependents_of()` | **implemented** |
 | `contracts.py` | `Resolution`, `Provenance` added for Phase 3 | implemented |
-| `parser/python.py` | .py → `RawModule` (+ Location + Resolution) | **graduated** (100% parse, Location on 100% of models, catalog reproduced as Resolution states) |
-| `parser/xml.py` | XML → `RawView` + locators (+ Location) | graduate `tests/spike/xml_parser.py` |
+| `parser/python.py` | .py → `RawModule` (+ Location + Resolution); `delegate=True` → `_inherits` | **graduated** (100% parse, Location on 100% of models, catalog reproduced as Resolution states) |
+| `parser/xml.py` | XML → `RawView` + locators (+ Location + mode/priority + Resolution) | **graduated** (99.98% parse; top-level directives only; primary/extension boundary + `priority` captured; eval `inherit_id` → DYNAMIC) |
 | `parser/csv.py` | ACL CSV → `AccessRule` | new (unspiked, low risk) |
 | `model/raw.py` | public `RawModel`/`RawField`/`RawView` types | implemented |
-| `model/resolver.py` | `RawModel → ResolvedModel`, provenance, `related=` worklist fixpoint, field-override attribute merge | **implemented** (backlog items 1 & 2 done) |
-| `model/xpath.py` | Odoo XPath **dialect gate** + `%(id)d` interpolation | `hasclass` impl'd |
-| `model/arch.py` | `EffectiveArchBuilder` — ordered cohort application | stub + scope |
+| `model/resolver.py` | `RawModel → ResolvedModel`, provenance, `related=` worklist fixpoint, field-override attribute merge, one2many inverse discovery | **implemented** (field-resolution backlog closed — items 1, 2 & 3 done) |
+| `model/xpath.py` | Odoo XPath **dialect gate** + `%(id)d` interpolation | **audited complete** (`hasclass` is the only extension used corpus-wide; `assert_complete()` gate + full XPath-1.0 builtin set; unknown fn → announced) |
+| `model/arch.py` | `EffectiveArchBuilder` — ordered cohort application | **implemented** (registry-wide, primary-aware, load-order+priority; honest `unresolved_locators`, no Diagnostics) |
 
 ## Hard constraints (violate these and you erode trust)
 
@@ -121,14 +121,95 @@ separate `report` bucket).
    restoring `related=` that overrides dropped also rescued 11 previously-UNRESOLVED
    fields (related lift 254 -> 263, unresolved 13 -> 2). The 2 remaining UNRESOLVED
    hop through a field defined outside the corpus — honestly declined, not guessed.
-3. one2many inverse discovery by scanning the comodel — 6 sites.
+3. ~~one2many inverse discovery by scanning the comodel — "6 sites".~~
+   **Re-scoped by measurement, then done.** The catalog's "6 sites" was the
+   flagged tail, not the work: the live corpus has **684** own `One2many` fields,
+   **618** with a literal `inverse_name` to verify. Sorting them before coding
+   (the confirm-live-state step) overturned the framing a third time — the split:
+     - **599** — inverse names a Many2one declared on the comodel directly.
+     - **18** — inverse names a back-pointer the comodel only has through
+       inheritance/delegation: **14** via `_inherit`, **4** via `_inherits`. This
+       is why the lookup must consume the comodel's *effective* fields
+       (`_EffectiveFields`), never its raw own defs.
+     - **6** — inverse names a real but **non-relational** Integer field on the
+       comodel (`res_id`/`sms_id_int`/`create_uid`/`parent_res_id`): the legitimate
+       reference-style / soft-FK inverse (a deleted-record id, or paired with a
+       `res_model`). The comodel is solidly known, so this is left **STATIC** with
+       an honest `inverse-nonrelational` note — not fabricated into a defect.
+     - **1 → 0** — the sole *apparent* dangling inverse (`res.partner.daughter_ids`
+       → `test.inherit.daughter.partner_id`) was **not** a defect: the comodel
+       reaches `partner_id` through a `delegate=True` delegation the parser didn't
+       model. Marking it UNRESOLVED would have been a false accusation, so the fix
+       was to teach the parser that `Many2one(..., delegate=True)` is the modern
+       `_inherits` spelling (Odoo reflects it into `_inherits`). That dissolved the
+       case (→ resolved via delegation) **and** correctly modelled `ir.cron`'s
+       delegation to `ir.actions.server`. Live genuinely-dangling inverses: **0**.
+   Implemented as `ModelResolver._verify_inverses` (pass 2.5), reusing
+   `_EffectiveFields` and the *merged* `inverse_name` (an override that drops it is
+   restored by `_merge_field` first). Honest in both directions: present+relational
+   → `inverse-resolved`; present+non-relational → STATIC + note; absent from a
+   fully-visible comodel → UNRESOLVED + `inverse-dangling`; comodel outside the
+   corpus → known literal, not downgraded, `inverse-comodel-outside-corpus`.
+   Scoreboard locks it: `inverse-resolved` 618, `inverse-nonrelational` 6,
+   `inverse-dangling` 0. **This closes the field-resolution backlog.**
 
 ## View-resolution backlog (from the Phase 0.6 catalog)
-1. Register the full Odoo XPath dialect (audit beyond `hasclass`).
-2. Registry-wide ordered effective-arch application (base + cohort).
-3. `%(xmlid)d/s` interpolation before evaluation.
+1. ~~Register the full Odoo XPath dialect (audit beyond `hasclass`).~~ **Done.**
+   Audited every function name appearing in a real inheritance locator across the
+   corpus: exactly one is non-XPath-1.0 — `hasclass`. Odoo registers no other
+   custom XPath function for view inheritance (stock XPath 1.0 + `hasclass`; see
+   `ir_ui_view.py`). So the dialect is **complete**. `xpath.py` makes it *provable*
+   rather than assumed: `ODOO_XPATH_FUNCTIONS` is authoritative, `register_dialect`
+   and the catalog share one `_implementations()` source, and `assert_complete()`
+   (asserted by a test) fails if catalog-'implemented' ≠ registered in either
+   direction. The old partial XPath-1.0 builtin list (missing `name`/`local-name`/
+   `floor`/…) was completed so an ordinary locator is never mis-flagged as a gap;
+   an unknown/unsupported fn is surfaced by `unsupported_functions()` → the
+   applicator marks it **DYNAMIC (announced)**, never a silent no-match.
+2. ~~Registry-wide ordered effective-arch application (base + cohort).~~ **Done.**
+   **Re-scoped by measurement first** (the confirm-live-state step overturned the
+   doc's framing a fourth time). The spike's headline 97.29% came from a *loose*
+   test — "does the locator's target exist anywhere in the ancestor chain's raw
+   arches" — not from a real applicator. A **correct** applicator forced two
+   corrections, each confirmed live before coding:
+     - **The primary boundary is load-bearing.** A `mode="primary"` view starts its
+       own arch tree (Odoo does NOT apply it onto its parent). Walking through
+       primaries lumps unrelated trees into one cohort and `replace` directives
+       clobber nodes: record-view residual measured **234 → 79** the moment the
+       boundary is respected. So the parser captures `mode` (defaulted
+       primary/extension) and the builder groups by *root* (nearest primary/base),
+       seeding a derived primary from its parent-root's effective arch.
+     - **Only TOP-LEVEL arch children are directives.** Odoo applies the inheriting
+       view's arch's direct children as the spec; nested `xpath` is payload. The
+       spike's `arch.iter()` over-counted nested elements as fake locators,
+       inflating both denominator and failures. Counting top-level only is both
+       correct and what produced the honest number.
+   `EffectiveArchBuilder.build` is registry-wide: it groups every extension view
+   under its root, orders each cohort by `ModuleGraph.load_order()` then `priority`
+   (reusing the same graph the model resolver rides — order is correctness, not
+   reimplemented), applies `xpath`/`position` directives **at each directive's turn**
+   (Odoo-faithful: a directive that can't find its target when its turn comes is
+   genuinely unresolvable), and returns one `EffectiveView` per primary with
+   `contributors` provenance. **Confirmed live on the corpus:** 3487 effective
+   views built, **record-view locators 2131 → 2101 resolved = 98.59%**, dangling
+   30, dialect gaps 0. Honest state in both directions (RFC §10): a match →
+   resolved; a genuine dangle → `unresolved_locators` UNRESOLVED (Phase-4
+   candidate, not accused here); a limitation (dialect/interpolation/eval-inherit/
+   base-outside-corpus) → DYNAMIC announced.
+3. `%(xmlid)d/s` interpolation before evaluation. **Deferred** (17 live locators).
+   `xpath.resolve_interpolation`/`has_interpolation` exist; the applicator detects
+   and marks them **DYNAMIC (`interpolation-deferred`)** rather than silently
+   no-matching. Resolving needs the XML-ID → id map (the semantic index).
 4. QWeb `<template>` inheritance (shares the mechanism; own `t-` directives).
-5. Genuine dangling locators → `view.xpath-target-missing` (Phase 4, gated on #1–2).
+   **Deferred** (48 live template locators unresolved of ~900). Templates build an
+   effective view but are marked **PARTIAL (`qweb-deferred`)** — improvable, not a
+   defect and not runtime-derived.
+5. Genuine dangling locators → `view.xpath-target-missing` (Phase 4, gated on #1–2,
+   now met). The 30 record danglers are recorded as honest UNRESOLVED state; the
+   accusation is the Phase-4 analyzer's job (applicator-before-analyzer). The live
+   residue is dominated by the `res.users` multi-form family (targets added in a
+   sibling primary tree) plus a couple of real Odoo source typos
+   (`res_useurs_view_form_profile`).
 
 ## Not in Phase 3 scope (deferred per RFC)
 - Durable cache + true incremental activation (structures exist now; turned on at
