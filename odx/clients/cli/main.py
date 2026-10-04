@@ -22,6 +22,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from odx.clients.cli import config as cfgmod
+from odx.clients.cli import runtime_cmds as rt
+from odx.runtime import commands as rcmd
 from odx.runtime import detect_runtime
 
 console = Console()
@@ -143,27 +145,68 @@ def init(
 # daily loop (runtime) — Phase 1
 # ===========================================================================
 @app.command()
-def run(watch: bool = typer.Option(False, "--watch", help="Auto-reload on change.")) -> None:
-    """Run the Odoo instance."""
-    _stub("run" + (" --watch" if watch else ""), "Phase 1 (runtime wrappers)")
+def run(
+    watch: bool = typer.Option(False, "--watch", help="Auto-reload on change (--dev)."),
+    db: str = typer.Option(None, "--db", "-d", help="Database (default: [database] default)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it."),
+) -> None:
+    """Run the Odoo instance.
+
+    [dim]Example:[/dim] odx run --watch
+    """
+    s = rt.load_settings()
+    rt.run_one(rcmd.run_command(s, watch=watch, db=db), dry_run=dry_run)
 
 
 @app.command()
-def logs(module: str = typer.Argument(None, help="Filter to a module.")) -> None:
-    """Tail filtered logs."""
-    _stub("logs", "Phase 1 (runtime wrappers)")
+def logs(
+    module: str = typer.Argument(None, help="Filter to a module (default: [logs] scope)."),
+    level: str = typer.Option(None, "--level", "-l", help="Minimum level: debug|info|warning|error."),
+    tail: int = typer.Option(200, "--tail", "-n", help="Lines of history to show first."),
+    follow: bool = typer.Option(True, "--follow/--no-follow", help="Keep streaming."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it."),
+) -> None:
+    """Tail filtered logs.
+
+    [dim]Example:[/dim] odx logs my_module --level warning
+    """
+    s = rt.load_settings()
+    cmd = rcmd.logs_command(s, follow=follow, tail=tail)
+    if cmd is None:
+        rt.err_console.print("[red]error:[/red] no log file configured — set [bold]\\[logs] file[/bold] "
+                             "in .odx.toml, or read the output of [bold]odx run[/bold].")
+        raise typer.Exit(2)
+    rt.stream_logs(cmd, scope=module or s.logs_scope, level=level, dry_run=dry_run)
 
 
 @app.command()
-def shell() -> None:
+def shell(
+    db: str = typer.Option(None, "--db", "-d", help="Database (default: [database] default)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it."),
+) -> None:
     """Open an Odoo shell."""
-    _stub("shell", "Phase 1 (runtime wrappers)")
+    s = rt.load_settings()
+    rt.run_one(rcmd.shell_command(s, db=db), dry_run=dry_run)
 
 
 @app.command()
-def test(module: str = typer.Argument(None, help="Module to test.")) -> None:
-    """Run module tests."""
-    _stub("test", "Phase 1 (runtime wrappers)")
+def test(
+    module: str = typer.Argument(None, help="Module to test (default: [logs] scope)."),
+    db: str = typer.Option(None, "--db", "-d", help="Database (default: [database] default)."),
+    install: bool = typer.Option(False, "--install", help="Install (-i) instead of update (-u)."),
+    tags: str = typer.Option(None, "--tags", help="--test-tags spec (default: /<module>)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it."),
+) -> None:
+    """Run module tests.
+
+    [dim]Example:[/dim] odx test my_module --tags /my_module:TestSale
+    """
+    s = rt.load_settings()
+    module = module or s.logs_scope
+    if not module:
+        rt.err_console.print("[red]error:[/red] which module? e.g. [bold]odx test my_module[/bold]")
+        raise typer.Exit(2)
+    rt.run_one(rcmd.odoo_test_command(s, module, db=db, install=install, tags=tags), dry_run=dry_run)
 
 
 # ===========================================================================
@@ -294,45 +337,88 @@ def inherit_view(xmlid: str) -> None:
 
 
 @db_app.command("list")
-def db_list() -> None:
-    """List databases."""
-    _stub("db list", "Phase 1 (runtime wrappers)")
+def db_list(dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it.")) -> None:
+    """List databases. [green](read-only)[/green]"""
+    s = rt.load_settings()
+    res = rt.run_one(rcmd.db_list_command(s), dry_run=dry_run, capture=True)
+    for line in res.stdout.splitlines():
+        if line.strip():
+            typer.echo(line.strip())
 
 
 @db_app.command("new")
-def db_new(name: str) -> None:
-    """Create a database."""
-    _stub(f"db new {name}", "Phase 1 (runtime wrappers)", writes=True)
+def db_new(
+    name: str,
+    bare: bool = typer.Option(False, "--bare", help="Empty postgres db (no Odoo base install)."),
+    demo: bool = typer.Option(False, "--demo", help="Load demo data."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it."),
+) -> None:
+    """Create a database (Odoo-initialised unless --bare). [yellow](mutating)[/yellow]"""
+    s = rt.load_settings()
+    rt.run_one(rcmd.db_new_command(s, name, bare=bare, demo=demo), dry_run=dry_run)
+    if not dry_run:
+        console.print(f"[green]✓[/green] created database [bold]{name}[/bold]")
 
 
 @db_app.command("drop")
-def db_drop(name: str) -> None:
-    """Drop a database."""
-    _stub(f"db drop {name}", "Phase 1 (runtime wrappers)", writes=True)
+def db_drop(name: str, yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation."), dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it.")) -> None:
+    """Drop a database. [yellow](mutating)[/yellow]"""
+    s = rt.load_settings()
+    rt.confirm_mutation(f"Drop database {name}", yes=yes, dry_run=dry_run)
+    rt.run_one(rcmd.db_drop_command(s, name), dry_run=dry_run)
+    if not dry_run:
+        console.print(f"[green]✓[/green] dropped database [bold]{name}[/bold]")
 
 
 @db_app.command("copy")
-def db_copy(src: str, dst: str) -> None:
-    """Copy a database."""
-    _stub(f"db copy {src} {dst}", "Phase 1 (runtime wrappers)", writes=True)
+def db_copy(src: str, dst: str, dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it.")) -> None:
+    """Copy a database (postgres template copy; filestore not copied). [yellow](mutating)[/yellow]"""
+    s = rt.load_settings()
+    rt.run_one(rcmd.db_copy_command(s, src, dst), dry_run=dry_run)
+    if not dry_run:
+        console.print(f"[green]✓[/green] copied [bold]{src}[/bold] → [bold]{dst}[/bold]")
 
 
 @db_app.command("dump")
-def db_dump(name: str) -> None:
-    """Dump a database."""
-    _stub(f"db dump {name}", "Phase 6 (runtime introspection)", writes=True)
+def db_dump(
+    name: str,
+    output: Path = typer.Option(None, "--output", "-o", help="Dump file (default: <name>.dump)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it."),
+) -> None:
+    """Dump a database (pg_dump custom format) to a file."""
+    s = rt.load_settings()
+    out = output or Path(f"{name}.dump")
+    rt.run_one(rcmd.db_dump_command(s, name, out), dry_run=dry_run)
+    if not dry_run:
+        console.print(f"[green]✓[/green] wrote [bold]{out}[/bold]")
 
 
 @db_app.command("restore")
-def db_restore(name: str) -> None:
-    """Restore a database."""
-    _stub(f"db restore {name}", "Phase 6 (runtime introspection)", writes=True)
+def db_restore(
+    name: str,
+    dump_file: Path = typer.Argument(..., help="pg_dump custom-format file."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it."),
+) -> None:
+    """Restore a dump into a new database. [yellow](mutating)[/yellow]"""
+    s = rt.load_settings()
+    if not dry_run and not dump_file.is_file():
+        rt.err_console.print(f"[red]error:[/red] {dump_file} does not exist.")
+        raise typer.Exit(2)
+    rt.confirm_mutation(f"Restore {dump_file} into new database {name}", yes=yes, dry_run=dry_run)
+    rt.run_commands(rcmd.db_restore_commands(s, name, dump_file), dry_run=dry_run)
+    if not dry_run:
+        console.print(f"[green]✓[/green] restored into [bold]{name}[/bold]")
 
 
 @db_app.command("anonymize")
-def db_anonymize(name: str) -> None:
-    """Anonymize a database."""
-    _stub(f"db anonymize {name}", "Phase 6 (runtime introspection)", writes=True)
+def db_anonymize(name: str, yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation."), dry_run: bool = typer.Option(False, "--dry-run", help="Print the command instead of running it.")) -> None:
+    """Scrub personal data in place (partners, user logins, messages). [yellow](mutating)[/yellow]"""
+    s = rt.load_settings()
+    rt.confirm_mutation(f"Anonymize database {name} in place", yes=yes, dry_run=dry_run)
+    rt.run_one(rcmd.db_anonymize_command(s, name), dry_run=dry_run)
+    if not dry_run:
+        console.print(f"[green]✓[/green] anonymized [bold]{name}[/bold]")
 
 
 @diff_app.command("db")
