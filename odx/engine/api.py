@@ -22,14 +22,8 @@ from odx.engine.contracts import (
     FieldInfo,
     ModelInfo,
     Reference,
+    Scope,
 )
-
-
-# Scope: the unit analyzers accept (C5/§8) — a project-wide default sentinel now,
-# a real scope object (module/file/model) once incrementality lands.
-@dataclass(frozen=True)
-class Scope:
-    label: str = "all"
 
 
 ALL: Final[Scope] = Scope("all")
