@@ -80,3 +80,30 @@ def test_engine_package_exists():
     assert ENGINE.is_dir(), "engine package must exist"
     assert (ENGINE / "contracts.py").is_file()
     assert (ENGINE / "api.py").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Phase-5 API validation gate (RFC §19): clients talk to the PUBLIC surface —
+# `odx.engine.api` (Engine), `odx.engine.contracts` and `odx.engine.config` —
+# never to pipeline internals (parser/model/index/semantic_api/analyzers...).
+# A client needing an internal is an API flaw to fix in the engine.
+# --------------------------------------------------------------------------- #
+CLIENTS = ODX_ROOT / "clients"
+PUBLIC_ENGINE = {"odx.engine.api", "odx.engine.contracts", "odx.engine.config"}
+
+
+def test_clients_use_only_the_public_engine_surface():
+    bad = _violations(
+        CLIENTS,
+        lambda m: m.startswith("odx.engine") and m not in PUBLIC_ENGINE,
+    )
+    assert not bad, "clients must use the public API only:\n" + "\n".join(bad)
+
+
+def test_clients_do_not_reach_into_the_semantic_api():
+    offenders = []
+    for py in CLIENTS.rglob("*.py"):
+        text = py.read_text(encoding="utf-8")
+        if ".api." in text.replace("engine.api import", "").replace("odx.engine.api", ""):
+            offenders.append(str(py.relative_to(REPO_ROOT)))
+    assert not offenders, "clients bypass Engine via .api: " + ", ".join(offenders)

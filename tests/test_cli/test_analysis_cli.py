@@ -119,3 +119,28 @@ def test_upgrade_check_and_apply(proj):
     text = view.read_text()
     assert "<list" in text and "<tree" not in text and "list,form" in text
     assert "'18.0.1.0.0'" in (proj / "addons" / "lib_core" / "__manifest__.py").read_text()
+
+
+def test_report_with_runtime_folds_in_the_probe(proj, monkeypatch):
+    from odx.engine.contracts import InstallProbe
+    import odx.runtime.probe as probe_mod
+
+    def fake_probe(settings, modules, **kw):
+        return InstallProbe(database="odx_doctor_x", modules=tuple(modules), returncode=1,
+                            log="2024-01-01 10:00:00,000 1 ERROR db odoo.modules.loading: "
+                                "Module lib_ext: External ID not found in the system: x.y\n")
+    monkeypatch.setattr(probe_mod, "install_probe", fake_probe)
+    (proj / ".odx.toml").write_text('project = "p"\n[odoo]\nruntime = "source"\n'
+                                    'addons_paths = ["./addons"]\nsource_path = "./odoo"\n'
+                                    '[database]\ndefault = "dev"\n')
+    import os
+    old = os.getcwd()
+    os.chdir(proj)
+    try:
+        r = odx("report", "--with-runtime", "-f", "json")
+    finally:
+        os.chdir(old)
+    data = json.loads(r.output)
+    assert data["runtime"]["ok"] is False
+    assert data["score"] <= 59
+    assert any(d["code"] == "doctor.xmlid-not-found" for d in data["runtime"]["diagnostics"])

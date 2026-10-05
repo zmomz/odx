@@ -147,6 +147,17 @@ class ModelInfo:
 
 
 @dataclass(frozen=True)
+class ModelSummary:
+    """A model's identity without its fields (listing / completion)."""
+    name: str
+    kind: str = "Model"
+    defined_in: str | None = None
+    complete: bool = False
+    modules: list[str] = dc_field(default_factory=list)
+    resolution: Resolution = Resolution.STATIC
+
+
+@dataclass(frozen=True)
 class Reference:
     kind: str                       # one of the RFC §7 reference kinds
     location: Location
@@ -265,6 +276,22 @@ class ViewSpec:
     module: str
     inherit_xmlid: str | None = None           # inherit an existing view
     fields: tuple[str, ...] = ()               # explicit fields; else engine picks
+
+
+@dataclass(frozen=True)
+class ReportSpec:
+    name: str                                  # e.g. "book_card" -> report/book_card_report.xml
+    module: str
+    model: str                                 # the report's model (docs)
+    title: str = ""
+
+
+@dataclass(frozen=True)
+class ControllerSpec:
+    name: str                                  # e.g. "library" -> LibraryController
+    module: str
+    route: str | None = None                   # default "/<module>/<name>"
+    auth: str = "user"                         # user | public | none
 
 
 @dataclass(frozen=True)

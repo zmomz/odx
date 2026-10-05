@@ -407,7 +407,7 @@ def new_report(
     dry_run: bool = _DRY,
 ) -> None:
     """Scaffold a QWeb report.  e.g. [bold]odx new report book_card --model library.book[/bold]"""
-    from odx.engine.generators import ReportSpec
+    from odx.engine.contracts import ReportSpec
     proj = sc.project()
     eng = sc.engine(proj)
     spec = ReportSpec(name=name, module=sc.resolve_module(proj, module), model=model,
@@ -424,7 +424,7 @@ def new_controller(
     dry_run: bool = _DRY,
 ) -> None:
     """Scaffold an HTTP controller.  e.g. [bold]odx new controller library[/bold]"""
-    from odx.engine.generators import ControllerSpec
+    from odx.engine.contracts import ControllerSpec
     proj = sc.project()
     eng = sc.engine(proj)
     spec = ControllerSpec(name=name, module=sc.resolve_module(proj, module), route=route,
@@ -458,18 +458,17 @@ def add_field(
     e.g. [bold]odx add field partner_id --to library.book --comodel res.partner[/bold]
     """
     from odx.engine.contracts import FieldSpec
-    from odx.engine.generators import guess_type, normalize_type
     proj = sc.project()
     eng = sc.engine(proj)
     ftype = type_
     if not ftype:
-        guesses = guess_type(name)
+        guesses = eng.guess_field_type(name)
         if yes:
             ftype = guesses[0]
         else:
             ftype = typer.prompt(f"Field type (suggested: {', '.join(guesses)})",
                                  default=guesses[0])
-    ftype = normalize_type(ftype) or ftype
+    ftype = eng.normalize_field_type(ftype) or ftype
     if not yes and ftype in ("Many2one", "One2many", "Many2many") and not comodel:
         comodel = typer.prompt("Comodel (target model)")
     if not yes and ftype == "One2many" and not inverse:

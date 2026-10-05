@@ -61,23 +61,9 @@ MANIFEST = "__manifest__.py"
 DEFAULT_VERSION = "17.0"
 
 
-# --------------------------------------------------------------------------- #
-# extra specs for generators the core contracts don't (yet) name
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class ReportSpec:
-    name: str                      # e.g. "book_card" -> report/book_card_report.xml
-    module: str
-    model: str                     # the report's model (docs)
-    title: str = ""
-
-
-@dataclass(frozen=True)
-class ControllerSpec:
-    name: str                      # e.g. "library" -> LibraryController
-    module: str
-    route: str | None = None       # default "/<module>/<name>"
-    auth: str = "user"             # user | public | none
+# ReportSpec / ControllerSpec are public contracts (moved to contracts.py at the
+# Phase-5 API gate: clients built them from here, an internal module).
+from odx.engine.contracts import ControllerSpec, ReportSpec  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #

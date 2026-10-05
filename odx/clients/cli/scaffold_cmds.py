@@ -14,10 +14,8 @@ from rich.console import Console
 
 from odx.clients.cli import config as cfgmod
 from odx.clients.edits import PlanApplyError, apply_plan, render_plan
-from odx.engine.api import Engine
+from odx.engine.api import Engine, GeneratorError
 from odx.engine.contracts import Diagnostic, EditPlan, Severity
-from odx.engine.generators import GeneratorError
-from odx.engine.loadorder import MANIFEST_NAMES, ModuleGraph
 
 console = Console()
 err_console = Console(stderr=True)
@@ -61,11 +59,7 @@ def fail(msg: str, code: int = 1) -> None:
 
 
 def module_of_cwd(cwd: Path | None = None) -> str | None:
-    cwd = (cwd or Path.cwd()).resolve()
-    for d in (cwd, *cwd.parents):
-        if any((d / n).is_file() for n in MANIFEST_NAMES):
-            return d.name
-    return None
+    return Engine.module_containing(cwd or Path.cwd())
 
 
 def resolve_module(proj: Project, module: str | None) -> str:
@@ -76,7 +70,7 @@ def resolve_module(proj: Project, module: str | None) -> str:
     here = module_of_cwd()
     if here:
         return here
-    names = sorted(ModuleGraph.discover(*proj.addons_paths).manifests)
+    names = engine(proj).discover_modules()
     if len(names) == 1:
         return names[0]
     if not names:

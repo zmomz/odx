@@ -42,7 +42,7 @@ def engine(path: Path | None = None) -> Engine:
     root = project_root(path)
     with err_console.status("[dim]indexing addons…[/dim]", spinner="dots"):
         eng = Engine.load(root if path is None else Path(path).resolve())
-        eng.api                                     # build the pipeline now
+        eng.warm()                                  # build the pipeline now
     return eng
 
 

@@ -26,12 +26,17 @@ from odx.engine.contracts import (
     HealthReport,
     InstallProbe,
     ModelInfo,
+    ModelSummary,
     Reference,
     Resolution,
     Scope,
     UpgradeReport,
 )
+from odx.engine.generators.base import GeneratorError  # re-exported: part of the API
 from odx.engine.generators.engine_glue import _GeneratorMixin
+from odx.engine.loadorder import MANIFEST_NAMES, ModuleGraph
+
+__all__ = ["ALL", "PROJECT", "Engine", "GeneratorError"]
 
 ALL: Final[Scope] = Scope("all")
 PROJECT: Final[Scope] = Scope("project")       # sentinel: the user's own modules
@@ -113,6 +118,44 @@ class Engine(_GeneratorMixin):
     def get_fields(self, model: str) -> list[FieldInfo]:
         return self.api.get_fields(model)
 
+    def get_field(self, model: str, field: str) -> FieldInfo | None:
+        return self.api.get_field(model, field)
+
+    def list_models(self, prefix: str = "", module: str | None = None) -> list[ModelSummary]:
+        """Model identities (no fields), optionally by name prefix / contributing
+        module. Added at the Phase-5 gate: MCP needed it and had to reach into
+        the SemanticAPI to build it."""
+        out: list[ModelSummary] = []
+        for name in self.api.model_names():
+            if prefix and not name.startswith(prefix):
+                continue
+            m = self.api.resolved_model(name)
+            mods = list(dict.fromkeys(p.module for p in m.contributors))
+            if module and module not in mods:
+                continue
+            out.append(ModelSummary(name=name, kind=m.kind, defined_in=m.defined_in,
+                                    complete=self.api.is_complete(name), modules=mods,
+                                    resolution=m.resolution))
+        return out
+
+    def discover_modules(self) -> list[str]:
+        """Module names under the project's addons paths — manifest discovery
+        only, no parsing (cheap; for clients resolving `--module` defaults)."""
+        return sorted(ModuleGraph.discover(*self.addons_paths()).manifests)
+
+    @staticmethod
+    def module_containing(path: Path) -> str | None:
+        """Name of the module whose directory contains `path` (by manifest)."""
+        p = Path(path).resolve()
+        for d in (p, *p.parents):
+            if any((d / n).is_file() for n in MANIFEST_NAMES):
+                return d.name
+        return None
+
+    def warm(self) -> None:
+        """Build the pipeline now (clients call this to show progress)."""
+        self._ensure()
+
     def field_exists(self, model: str, field: str) -> bool:
         return self.api.field_exists(model, field)
 
@@ -184,6 +227,18 @@ class Engine(_GeneratorMixin):
         except Exception:                      # engine-backed checks are best-effort
             pass
         return diags
+
+    @staticmethod
+    def guess_field_type(name: str) -> list[str]:
+        """§16 name-based type suggestions (a client confirms; never assumed)."""
+        from odx.engine.generators.fields import guess_type
+        return guess_type(name)
+
+    @staticmethod
+    def normalize_field_type(t: str | None) -> str | None:
+        """`many2one` / `m2o` / `Many2one` -> `Many2one` (None if unknown)."""
+        from odx.engine.generators.fields import normalize_type
+        return normalize_type(t)
 
     def fix(self, scope: Scope = PROJECT, only: list[str] | None = None) -> EditPlan:
         """One EditPlan composing every safe fix for the scope's Diagnostics."""

@@ -12,24 +12,25 @@ license = { text = "MIT" }
 authors = [{ name = "Maaz" }]
 keywords = ["odoo", "static-analysis", "semantic-engine", "cli"]
 
-# Runtime deps are deliberately minimal for Phase 0/0.5.
-# The ENGINE core (parser/model/index) must stay dependency-light; heavier
-# tooling (lxml, jinja2) is pulled in only when the phase that needs it lands.
+# Runtime deps stay minimal: the ENGINE core needs only lxml (XML/XPath) and
+# jinja2 (generator templates); typer/rich are client-only; mcp is optional.
 dependencies = [
     "typer>=0.12",          # CLI client (clients/cli only)
     "rich>=13.0",           # rendering (clients only)
     "jinja2>=3.1",          # generator templates (engine/generators, Phase 2)
+    "lxml>=5.0",            # XML parsing + XPath dialect (engine parser / arch builder)
 ]
 
 [project.optional-dependencies]
-xml = ["lxml>=5.0"]         # faster/robust XML parsing (Phase 3 parser)
+mcp = ["mcp>=1.2"]          # MCP client (Phase 5): `odx-mcp`
 dev = [
     "pytest>=8.0",
-    "lxml>=5.0",
+    "mcp>=1.2",
 ]
 
 [project.scripts]
 odx = "odx.clients.cli.main:app"
+odx-mcp = "odx.clients.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["odx"]
