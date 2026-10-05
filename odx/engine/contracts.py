@@ -118,6 +118,10 @@ class FieldInfo:
     attributes: dict[str, object] = dc_field(default_factory=dict)
     defined_in: str = ""            # provenance — powers `why` + invalidation
     location: Location | None = None
+    # folded in from the resolver when the Semantic API landed (RFC §10):
+    resolution: Resolution = Resolution.STATIC
+    notes: tuple[str, ...] = ()
+    via: str = "own"                # own | _inherit | _inherits | magic
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,13 @@ class ModelInfo:
     delegates: list[str] = dc_field(default_factory=list)
     fields: list[FieldInfo] = dc_field(default_factory=list)   # effective (own + inherited + delegated)
     location: Location | None = None
+    kind: str = "Model"             # Model | AbstractModel | TransientModel
+    defined_in: str | None = None   # module whose class declares `_name` (None: outside corpus)
+    modules: list[str] = dc_field(default_factory=list)   # every contributing module, load order
+    description: str | None = None
+    resolution: Resolution = Resolution.STATIC
+    complete: bool = False          # whole model visible (missing field => provable defect)
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,6 +151,10 @@ class Reference:
     kind: str                       # one of the RFC §7 reference kinds
     location: Location
     detail: str = ""
+    model: str | None = None        # the referenced model
+    field: str | None = None        # the referenced field (None: model-level ref)
+    module: str | None = None       # module whose source makes the reference
+    resolution: Resolution = Resolution.STATIC
 
 
 @dataclass(frozen=True)
@@ -151,6 +166,10 @@ class AccessRule:
     perm_create: bool
     perm_unlink: bool
     location: Location | None = None
+    xmlid: str | None = None          # the row's external id (module.id)
+    name: str | None = None
+    model_ref: str | None = None      # the model's external id as written (model_x)
+    module: str | None = None         # module declaring the row
 
 
 # --------------------------------------------------------------------------- #

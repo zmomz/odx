@@ -22,7 +22,13 @@ import ast
 from pathlib import Path
 
 from odx.engine.contracts import Location, Resolution
-from odx.engine.model.raw import RawField, RawModel, RawModule
+from odx.engine.model.raw import (
+    RawField,
+    RawMethod,
+    RawModel,
+    RawModule,
+    RawSqlConstraint,
+)
 
 # Odoo field constructors (odoo.fields.*).
 FIELD_TYPES = {
@@ -41,6 +47,12 @@ MODEL_BASES = {"Model", "AbstractModel", "TransientModel", "BaseModel"}
 _ATTR_KEYS = ("required", "store", "related", "compute", "readonly", "translate",
               "index", "default", "string", "help", "domain", "groups", "tracking",
               "ondelete")
+# Expression-valued kwargs kept as source text for the semantic index (§7):
+# domains, compute/inverse/search method names, related paths, groups, ...
+_EXPR_KEYS = ("domain", "context", "compute", "inverse", "search", "related",
+              "currency_field", "selection", "default", "groups", "comodel_name",
+              "inverse_name", "relation", "column1", "column2", "string", "store",
+              "required", "readonly", "states")
 
 
 # --------------------------------------------------------------------------- #
@@ -122,9 +134,18 @@ def _extract_field(name: str, target: ast.AST, call: ast.Call, ftype: str,
         if key in kw:
             v = kw[key]
             rf.attrs[key] = v.value if isinstance(v, ast.Constant) else "<expr>"
+    for key in _EXPR_KEYS:
+        if key in kw:
+            rf.exprs[key] = _unparse(kw[key])
+    # Selection(selection_list_or_method, ...) passes the selection positionally
+    if ftype in ("Selection", "Reference") and call.args and "selection" not in rf.exprs:
+        rf.exprs["selection"] = _unparse(call.args[0])
 
     if ftype in RELATIONAL:
-        comodel_node = call.args[0] if call.args else kw.get("comodel_name")
+        # Many2oneReference's first positional arg is `string`, not a comodel
+        # (its comodel comes from a sibling `model_field` at runtime).
+        positional = call.args if ftype != "Many2oneReference" else []
+        comodel_node = positional[0] if positional else kw.get("comodel_name")
         if comodel_node is not None:
             lit = _str_const(comodel_node)
             if lit is not None:
@@ -151,15 +172,99 @@ def _extract_field(name: str, target: ast.AST, call: ast.Call, ftype: str,
     return rf
 
 
+def _unparse(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except Exception:  # pragma: no cover - defensive; unparse is total in 3.11
+        return "<expr>"
+
+
+# --------------------------------------------------------------------------- #
+# methods — decorators (@api.depends/constrains/onchange/...) + env literals
+# --------------------------------------------------------------------------- #
+def _decorator_name(dec: ast.AST) -> tuple[str | None, list[ast.AST]]:
+    """`@api.depends('a')` -> ("depends", [args]); `@api.model` -> ("model", [])."""
+    args: list[ast.AST] = []
+    if isinstance(dec, ast.Call):
+        args = list(dec.args)
+        dec = dec.func
+    if isinstance(dec, ast.Attribute):
+        return dec.attr, args
+    if isinstance(dec, ast.Name):
+        return dec.id, args
+    return None, args
+
+
+def _parse_method(fn: ast.FunctionDef | ast.AsyncFunctionDef, file: Path) -> RawMethod:
+    name_col = fn.col_offset + len("async def " if isinstance(fn, ast.AsyncFunctionDef) else "def ")
+    m = RawMethod(name=fn.name,
+                  location=Location(file, fn.lineno, name_col, fn.lineno, name_col + len(fn.name)))
+    for dec in fn.decorator_list:
+        dname, dargs = _decorator_name(dec)
+        if dname is None:
+            continue
+        lits: list[str] = []
+        for a in dargs:
+            sc = _str_const(a)
+            if sc is not None:
+                lits.append(sc)
+            else:
+                lst = _str_list(a)
+                if lst is not None:
+                    lits.extend(lst)
+        m.decorators[dname] = lits
+    for node in ast.walk(fn):
+        # self.env['x.y']  (also env['x.y'] on any receiver ending in .env)
+        if isinstance(node, ast.Subscript):
+            v = node.value
+            if isinstance(v, ast.Attribute) and v.attr == "env":
+                lit = _str_const(node.slice)
+                if lit is not None:
+                    m.env_models.append((lit, _loc(node, file)))
+        elif isinstance(node, ast.Call):
+            f = node.func
+            # self.env.ref('module.xmlid')
+            if (isinstance(f, ast.Attribute) and f.attr == "ref"
+                    and isinstance(f.value, ast.Attribute) and f.value.attr == "env"
+                    and node.args):
+                lit = _str_const(node.args[0])
+                if lit is not None:
+                    m.xmlid_refs.append((lit, _loc(node, file)))
+            elif isinstance(f, ast.Name) and f.id == "super":
+                m.calls_super = True
+    return m
+
+
+def _sql_constraints(val: ast.AST, file: Path) -> list[RawSqlConstraint]:
+    out: list[RawSqlConstraint] = []
+    if not isinstance(val, (ast.List, ast.Tuple)):
+        return out
+    for elt in val.elts:
+        if isinstance(elt, (ast.Tuple, ast.List)) and len(elt.elts) >= 2:
+            name = _str_const(elt.elts[0])
+            definition = _str_const(elt.elts[1])
+            msg = elt.elts[2] if len(elt.elts) > 2 else None
+            if name is None or definition is None:
+                continue
+            out.append(RawSqlConstraint(
+                name=name, definition=definition,
+                message=(_str_const(msg) or _unparse(msg)) if msg is not None else "",
+                location=_loc(elt, file)))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # class -> RawModel
 # --------------------------------------------------------------------------- #
 def _parse_class(node: ast.ClassDef, module: str, file: Path) -> RawModel:
     rm = RawModel(name=None, location=_loc_classname(node, file),
-                  kind=_class_kind(node) or "Model")
+                  kind=_class_kind(node) or "Model", class_name=node.name)
     name_dynamic = False
 
     for stmt in node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            rm.methods.append(_parse_method(stmt, file))
+            continue
         if isinstance(stmt, (ast.For, ast.AsyncFor)):
             if any(_field_type(sub) for sub in ast.walk(stmt)):
                 rm.notes.append("fields-in-loop")       # some fields not static
@@ -186,6 +291,15 @@ def _parse_class(node: ast.ClassDef, module: str, file: Path) -> RawModel:
                     else:
                         rm.resolution = Resolution.DYNAMIC
                         rm.notes.append("dynamic-inherit")
+                    continue
+                if tgt == "_sql_constraints":
+                    rm.sql_constraints = _sql_constraints(val, file)
+                    continue
+                if tgt in ("_order", "_rec_name", "_description"):
+                    sv = _str_const(val)
+                    if sv is not None:
+                        setattr(rm, {"_order": "order", "_rec_name": "rec_name",
+                                     "_description": "description"}[tgt], sv)
                     continue
                 if tgt == "_inherits":
                     if isinstance(val, ast.Dict):
@@ -243,10 +357,63 @@ def parse_source(src: str, file: Path, module: str) -> RawModule:
         result.parse_error = f"{type(e).__name__}: {e}"
         return result
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and _class_kind(node):
-            result.models.append(_parse_class(node, module, file))
+    # Model classes: a direct models.Model/AbstractModel/TransientModel base, OR a
+    # base that is itself a model class of this file (`class B(A)` where A is a
+    # model — e.g. website's WebsitePublishedMultiMixin(WebsitePublishedMixin)).
+    kinds: dict[str, str] = {}
+    by_class: dict[str, RawModel] = {}
+    classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+    changed = True
+    while changed:
+        changed = False
+        for node in classes:
+            if node.name in kinds:
+                continue
+            k = _class_kind(node)
+            if k is None:
+                for b in node.bases:
+                    bn = b.id if isinstance(b, ast.Name) else None
+                    if bn and bn in kinds:
+                        k = kinds[bn]
+                        break
+            if k is not None:
+                kinds[node.name] = k
+                changed = True
+    for node in classes:
+        if node.name in kinds:
+            rm = _parse_class(node, module, file)
+            rm.kind = kinds[node.name]
+            result.models.append(rm)
+            by_class.setdefault(node.name, rm)
+    _module_level_fields(tree, by_class, file)
     return result
+
+
+def _module_level_fields(tree: ast.Module, by_class: dict[str, RawModel], file: Path) -> None:
+    """`setattr(IrRule, 'global', global_)` after `global_ = fields.Boolean(...)`
+    — how Odoo declares a field whose name is a Python keyword."""
+    pending: dict[str, tuple[ast.AST, ast.Call, str]] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name):
+            ft = _field_type(stmt.value)
+            if ft:
+                pending[stmt.targets[0].id] = (stmt.targets[0], stmt.value, ft)
+        elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            c = stmt.value
+            if isinstance(c.func, ast.Name) and c.func.id == "setattr" and len(c.args) == 3:
+                cls, name, val = c.args
+                fname = _str_const(name)
+                if not (isinstance(cls, ast.Name) and cls.id in by_class and fname):
+                    continue
+                if isinstance(val, ast.Name) and val.id in pending:
+                    _tgt, call, ft = pending[val.id]
+                elif _field_type(val):
+                    call, ft = val, _field_type(val)
+                else:
+                    continue
+                rf = _extract_field(fname, c, call, ft, file)
+                by_class[cls.id].fields.append(rf)
 
 
 def parse_python(path: Path, module: str) -> RawModule:

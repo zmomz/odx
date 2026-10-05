@@ -34,7 +34,16 @@ from pathlib import Path
 from lxml import etree
 
 from odx.engine.contracts import Location, Resolution
-from odx.engine.model.raw import Locator, RawView, RawXmlFile
+import re
+
+from odx.engine.model.raw import (
+    Locator,
+    RawRecord,
+    RawRecordField,
+    RawView,
+    RawXmlFile,
+    XmlIdRef,
+)
 
 VIEW_MODEL = "ir.ui.view"
 # positional inheritance verbs Odoo understands on a locator element
@@ -181,6 +190,168 @@ def _views_from_root(root: etree._Element, module: str, file: Path) -> list[RawV
     return views
 
 
+# --------------------------------------------------------------------------- #
+# generic records + the xml-id graph (RFC §7). Every data-file declaration is a
+# RawRecord; every xml-id USE is an XmlIdRef. Views stay RawViews too (above).
+# --------------------------------------------------------------------------- #
+RECORD_TAGS = ("record", "menuitem", "template", "report", "act_window",
+               "function", "delete")
+_REF_CALL = re.compile(r"""\bref\(\s*['"]([\w.]+)['"]\s*\)""")
+_INTERP = re.compile(r"%\(([\w.]+)\)[ds]")
+_TCALL = re.compile(r"^[\w]+\.[\w.]+$|^[\w]+$")
+# implicit external ids that are never declared in data files
+_IGNORED_PREFIXES = ("__export__.", "__import__.")
+
+
+def _is_noupdate(el: etree._Element) -> bool:
+    cur = el.getparent()
+    while cur is not None:
+        if cur.tag in ("data", "odoo", "openerp") and cur.get("noupdate") in ("1", "True", "true"):
+            return True
+        cur = cur.getparent()
+    return False
+
+
+def _record_from_el(el: etree._Element, module: str, file: Path) -> RawRecord:
+    tag = el.tag
+    xid = el.get("id")
+    rec = RawRecord(tag=tag, module=module, location=_loc(el, file),
+                    xmlid=_norm_ref(xid, module) if xid else None,
+                    attrs={k: v for k, v in el.attrib.items() if isinstance(k, str)},
+                    noupdate=_is_noupdate(el))
+    rec.element = el
+    if tag == "record":
+        rec.model = el.get("model")
+        for fld in el.findall("field"):
+            name = fld.get("name")
+            if not name:
+                continue
+            ref = fld.get("ref")
+            rf = RawRecordField(
+                name=name, location=_loc(fld, file),
+                text=(fld.text or "").strip() if len(fld) == 0 else None,
+                ref=_norm_ref(ref, module) if ref else None,
+                eval=fld.get("eval"))
+            rf.element = fld
+            rec.fields[name] = rf
+    elif tag == "menuitem":
+        rec.model = "ir.ui.menu"
+        parent = el.getparent()
+        if parent is not None and parent.tag == "menuitem" and parent.get("id") \
+                and "parent" not in rec.attrs:
+            rec.attrs["parent"] = parent.get("id")
+    elif tag == "template":
+        rec.model = "ir.ui.view"
+    elif tag == "report":
+        rec.model = "ir.actions.report"
+    elif tag == "act_window":
+        rec.model = "ir.actions.act_window"
+    elif tag in ("function", "delete"):
+        rec.model = el.get("model")
+    return rec
+
+
+def _add_ref(out: list[XmlIdRef], raw: str | None, module: str, el: etree._Element,
+             file: Path, context: str, record_model: str | None) -> None:
+    if not raw:
+        return
+    raw = raw.strip()
+    if not raw or raw.startswith(_IGNORED_PREFIXES) or not re.match(r"^[\w.]+$", raw):
+        return
+    out.append(XmlIdRef(xmlid=_norm_ref(raw, module), module=module,
+                        location=_loc(el, file), context=context,
+                        record_model=record_model))
+
+
+def _refs_from_root(root: etree._Element, module: str, file: Path) -> list[XmlIdRef]:
+    """Every xml-id use in the file. Walks every element once; the containing
+    record's model is tracked so a ref can be attributed (e.g. a `groups_id`
+    ref inside a `res.users` record)."""
+    out: list[XmlIdRef] = []
+
+    def record_model_of(el: etree._Element) -> str | None:
+        cur = el
+        while cur is not None:
+            if cur.tag == "record":
+                return cur.get("model")
+            if cur.tag in ("menuitem",):
+                return "ir.ui.menu"
+            if cur.tag == "template":
+                return "ir.ui.view"
+            cur = cur.getparent()
+        return None
+
+    for el in root.iter():
+        tag = el.tag
+        if not isinstance(tag, str):
+            continue
+        rmodel = None
+        if tag in ("field", "value"):
+            ref = el.get("ref")
+            if ref:
+                rmodel = record_model_of(el)
+                _add_ref(out, ref, module, el, file, f"field:{el.get('name') or ''}", rmodel)
+        if tag == "menuitem":
+            _add_ref(out, el.get("parent"), module, el, file, "menuitem:parent", "ir.ui.menu")
+            _add_ref(out, el.get("action"), module, el, file, "menuitem:action", "ir.ui.menu")
+        if tag == "template":
+            _add_ref(out, el.get("inherit_id"), module, el, file, "template:inherit_id", "ir.ui.view")
+        if tag == "report":
+            pass
+        for attr, val in el.attrib.items():
+            if not isinstance(attr, str) or not val:
+                continue
+            if attr == "groups":
+                for g in val.split(","):
+                    g = g.strip().lstrip("!-").strip()
+                    _add_ref(out, g, module, el, file, "groups",
+                             rmodel or record_model_of(el))
+            elif attr == "t-call":
+                if _TCALL.match(val.strip()):
+                    _add_ref(out, val, module, el, file, "t-call", "ir.ui.view")
+            elif attr == "eval" or attr in ("domain", "context", "filter_domain"):
+                for x in _REF_CALL.findall(val):
+                    _add_ref(out, x, module, el, file,
+                             f"eval:{el.get('name') or attr}", rmodel or record_model_of(el))
+            if "%(" in val:
+                for x in _INTERP.findall(val):
+                    _add_ref(out, x, module, el, file, "interpolation",
+                             rmodel or record_model_of(el))
+        # %(x)d inside text (e.g. <field name="arch"> payloads rarely; action
+        # names in domain text bodies)
+        if tag == "field" and el.text and "%(" in el.text and len(el) == 0:
+            for x in _INTERP.findall(el.text):
+                _add_ref(out, x, module, el, file, "interpolation", record_model_of(el))
+        if tag == "field" and el.text and "ref(" in el.text and len(el) == 0 \
+                and el.get("name") in ("domain", "domain_force", "context", "code"):
+            for x in _REF_CALL.findall(el.text):
+                _add_ref(out, x, module, el, file, f"eval:{el.get('name')}", record_model_of(el))
+    return out
+
+
+def _records_from_root(root: etree._Element, module: str, file: Path) -> list[RawRecord]:
+    out: list[RawRecord] = []
+    for el in root.iter(*RECORD_TAGS):
+        # a <field> named e.g. "report" is not a record; only real declarations
+        parent = el.getparent()
+        if el.tag in ("template", "report", "function", "delete", "menuitem", "act_window"):
+            # only top-level declarations (direct child of <odoo>/<data>/<openerp>)
+            # (menuitems may nest: a child menuitem's parent is implicit)
+            allowed = ("odoo", "data", "openerp") + (("menuitem",) if el.tag == "menuitem" else ())
+            if parent is not None and parent.tag not in allowed:
+                continue
+        elif el.tag == "record" and parent is not None and parent.tag not in ("odoo", "data", "openerp"):
+            continue
+        out.append(_record_from_el(el, module, file))
+    return out
+
+
+def _fill(result: RawXmlFile, root: etree._Element, module: str, file: Path) -> None:
+    result.views = _views_from_root(root, module, file)
+    result.records = _records_from_root(root, module, file)
+    result.xmlid_refs = _refs_from_root(root, module, file)
+
+
 def parse_string(src: str, file: Path, module: str) -> RawXmlFile:
     """Parse a data file from a source string (mirrors the Python parser's
     `parse_source` — the in-memory seam unit tests build against). Never raises."""
@@ -194,7 +365,7 @@ def parse_string(src: str, file: Path, module: str) -> RawXmlFile:
     if root is None:
         result.parse_error = "empty or unparseable document"
         return result
-    result.views = _views_from_root(root, module, file)
+    _fill(result, root, module, file)
     return result
 
 
@@ -215,5 +386,5 @@ def parse_xml(path: Path, module: str) -> RawXmlFile:
     if root is None:
         result.parse_error = "empty or unparseable document"
         return result
-    result.views = _views_from_root(root, module, path)
+    _fill(result, root, module, path)
     return result

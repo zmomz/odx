@@ -81,7 +81,7 @@ from pathlib import Path
 
 from odx.engine.contracts import FieldInfo, Location, Provenance, Resolution
 from odx.engine.loadorder import ModuleGraph
-from odx.engine.model.raw import RawField, RawModel, RawModule
+from odx.engine.model.raw import RawField, RawMethod, RawModel, RawModule, RawSqlConstraint
 
 
 @dataclass
@@ -107,6 +107,18 @@ class ResolvedModel:
     notes: list[str] = field(default_factory=list)
     # contributions kept for incremental invalidation (RFC §8): which files fed this model
     contributors: list[Provenance] = field(default_factory=list)
+    # whether some contribution DEFINES the model (new `_name`) inside the corpus;
+    # False => only extended here, defined outside the known addons (boundary).
+    defined: bool = False
+    defined_in: str | None = None                                # module of the defining class
+    # methods declared directly on this model (any contribution), in load order:
+    # name -> [(module, RawMethod)]. Inherited methods are walked by the
+    # semantic API over inherit_chain (Odoo method resolution, not field merge).
+    methods: dict[str, list[tuple[str, RawMethod]]] = field(default_factory=dict)
+    sql_constraints: list[tuple[str, RawSqlConstraint]] = field(default_factory=list)
+    order: str | None = None
+    rec_name: str | None = None
+    description: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +139,13 @@ class _Work:
     contributors: list[Provenance] = field(default_factory=list)
     identity: Resolution = Resolution.STATIC
     notes: list[str] = field(default_factory=list)
+    defined: bool = False
+    defined_in: str | None = None
+    methods: dict[str, list[tuple[str, RawMethod]]] = field(default_factory=dict)
+    sql_constraints: list[tuple[str, RawSqlConstraint]] = field(default_factory=list)
+    order: str | None = None
+    rec_name: str | None = None
+    description: str | None = None
 
 
 class ModelResolver:
@@ -199,6 +218,15 @@ class ModelResolver:
         if wm.location is None or rm.name is not None:          # prefer the defining (_name) site
             wm.location = rm.location or wm.location
         wm.contributors.append(Provenance(module=module, location=rm.location, via="own"))
+        if rm.is_definition and not wm.defined:
+            wm.defined, wm.defined_in = True, module
+        for meth in rm.methods:
+            wm.methods.setdefault(meth.name, []).append((module, meth))
+        for sc in rm.sql_constraints:
+            wm.sql_constraints.append((module, sc))
+        wm.order = rm.order or wm.order
+        wm.rec_name = rm.rec_name or wm.rec_name
+        wm.description = rm.description or wm.description
 
         # prototype parents: every _inherit target that isn't this model itself
         for parent in rm.inherit:
@@ -397,6 +425,13 @@ class ModelResolver:
                 resolution=_rollup(wm.identity, worst_field),
                 notes=list(wm.notes),
                 contributors=list(wm.contributors),
+                defined=wm.defined,
+                defined_in=wm.defined_in,
+                methods={k: list(v) for k, v in wm.methods.items()},
+                sql_constraints=list(wm.sql_constraints),
+                order=wm.order,
+                rec_name=wm.rec_name,
+                description=wm.description,
             )
         return out
 
@@ -475,6 +510,7 @@ def _merge_field(base: RawField, override: RawField) -> RawField:
         attrs={**base.attrs, **override.attrs},     # base survives; override wins per-key
         resolution=override.resolution,
         notes=list(override.notes),
+        exprs={**base.exprs, **override.exprs},
     )
     # comodel/inverse are only meaningful for the override's (restated) type. A
     # type-changing override (Many2one -> Char) must NOT drag a stale comodel in.

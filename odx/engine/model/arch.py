@@ -113,6 +113,7 @@ class EffectiveArchBuilder:
         for v in views:
             if v.xmlid:
                 self._reg.setdefault(v.xmlid, v)
+            tag_provenance(v)
         self._rank = {m: i for i, m in enumerate(self.graph.load_order())}
         self._built = {}
 
@@ -315,6 +316,39 @@ class EffectiveArchBuilder:
     def _cohort_order(self, base_xmlid: str, cohort: list[RawView]) -> list[RawView]:
         """Order an inheriting cohort by (module load order, then priority)."""
         return sorted(cohort, key=self._order_key)
+
+
+# --------------------------------------------------------------------------- #
+# Per-node provenance. Every element of a raw arch is stamped (in place, once)
+# with the view that declared it and its source line, so after application the
+# effective arch still knows, node by node, which file:line contributed it —
+# the index (RFC §7) attributes a `<field>` inside an inherited payload to the
+# inheriting view, in the correct nested model context. The attributes use an
+# `odx-` prefix no Odoo locator matches on.
+# --------------------------------------------------------------------------- #
+SRC_ATTR = "odx-src"
+LINE_ATTR = "odx-line"
+
+
+def tag_provenance(view: RawView) -> None:
+    arch = view.arch
+    if arch is None or not view.xmlid:
+        return
+    if arch.get(SRC_ATTR) is not None:
+        return
+    for el in arch.iter():
+        if isinstance(el.tag, str):
+            el.set(SRC_ATTR, view.xmlid)
+            el.set(LINE_ATTR, str(el.sourceline or 0))
+
+
+def node_origin(el) -> tuple[str | None, int]:
+    """(declaring view xmlid, source line) of an effective-arch node."""
+    try:
+        line = int(el.get(LINE_ATTR) or 0)
+    except ValueError:
+        line = 0
+    return el.get(SRC_ATTR), line
 
 
 # --------------------------------------------------------------------------- #
