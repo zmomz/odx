@@ -1,0 +1,19 @@
+from odoo import {{ imports|join(', ') }}
+
+
+class {{ cls }}(models.{{ kind }}):
+{% if name %}
+    _name = {{ name|py }}
+{% endif %}
+{% if description %}
+    _description = {{ description|py }}
+{% endif %}
+{% if inherit %}
+    _inherit = {{ inherit|py }}
+{% endif %}
+{% if fields_src %}
+
+{{ fields_src }}{% endif %}
+{% for m in methods %}
+
+{{ m }}{% endfor %}
