@@ -14,6 +14,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape as E
 from rich.panel import Panel
 from rich.table import Table
 
@@ -84,14 +85,14 @@ def render_diagnostics(diags: list[Diagnostic], fmt: str, root: Path) -> None:
     for d in diags:
         by_file[_rel(d.location.file, root) if d.location else "(project)"].append(d)
     for f, ds in by_file.items():
-        console.print(f"[bold]{f}[/bold]", highlight=False)
+        console.print(f"[bold]{E(f)}[/bold]", highlight=False)
         for d in ds:
             st = _STYLE.get(d.severity, "white")
             line = f"{d.location.start_line}" if d.location and d.location.start_line else "-"
             console.print(f"  [dim]{line:>5}[/dim]  [{st}]{d.severity.value:<7}[/{st}] "
-                          f"{d.message}  [dim]{d.code}[/dim]", highlight=False, soft_wrap=True)
+                          f"{E(d.message)}  [dim]{E(d.code)}[/dim]", highlight=False, soft_wrap=True)
             if d.suggested_fix is not None:
-                console.print(f"         [dim]fix: {d.suggested_fix.summary} "
+                console.print(f"         [dim]fix: {E(d.suggested_fix.summary)} "
                               "(run `odx fix`)[/dim]", highlight=False)
     counts = Counter(d.severity.value for d in diags)
     summary = ", ".join(f"{counts[s.value]} {s.value}" for s in Severity if counts[s.value])
@@ -134,7 +135,7 @@ def render_report(rep: HealthReport, fmt: str, root: Path) -> None:
     t.add_column("category")
     t.add_column("count", justify="right")
     for cat, n in sorted(rep.by_category.items(), key=lambda x: -x[1]):
-        t.add_row(cat, str(n))
+        t.add_row(E(cat), str(n))
     if rep.by_category:
         console.print(t)
     sev = ", ".join(f"{n} {k}" for k, n in rep.by_severity.items())
@@ -152,7 +153,7 @@ def render_report(rep: HealthReport, fmt: str, root: Path) -> None:
     if rep.recommendations:
         console.print("\n[bold]recommendations[/bold]")
         for r in rep.recommendations:
-            console.print(f"  • {r}", highlight=False)
+            console.print(f"  • {E(r)}", highlight=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -163,17 +164,17 @@ def render_usage(u: UsageReport, verbose: bool, fmt: str, root: Path) -> None:
         typer.echo(serialize.dumps(u, relative_to=root))
         return
     if u.model is None or (u.field and not u.known):
-        err_console.print(f"[yellow]{u.message}[/yellow]")
+        err_console.print(f"[yellow]{E(u.message)}[/yellow]")
         raise typer.Exit(1)
     what = f"{u.model}.{u.field}" if u.field else u.model
     where = f" — defined in {', '.join(u.defined_in)}" if u.defined_in else ""
     loc = f" ({_rel(u.definition.file, root)}:{u.definition.start_line})" if u.definition else ""
-    console.print(f"[bold]{what}[/bold]{where}{loc}", highlight=False)
+    console.print(f"[bold]{E(what)}[/bold]{E(where)}{E(loc)}", highlight=False)
     if not u.references:
         console.print("  [dim]no references found in the indexed addons[/dim]")
         return
     parts = [f"{n} {k}" for k, n in sorted(u.by_kind.items(), key=lambda x: -x[1])]
-    console.print("  " + " · ".join(parts), highlight=False)
+    console.print("  " + E(" · ".join(parts)), highlight=False)
     if not verbose:
         console.print("  [dim]`odx impact` for every location[/dim]")
         return
@@ -181,9 +182,9 @@ def render_usage(u: UsageReport, verbose: bool, fmt: str, root: Path) -> None:
     for r in u.references:
         by_kind[r.kind].append(r)
     for kind, refs in sorted(by_kind.items(), key=lambda x: -len(x[1])):
-        console.print(f"\n[bold cyan]{kind}[/bold cyan] ({len(refs)})")
+        console.print(f"\n[bold cyan]{E(kind)}[/bold cyan] ({len(refs)})")
         for r in refs:
             mark = "" if r.resolution.value == "static" else f" [yellow][{r.resolution.value}][/yellow]"
-            console.print(f"  {_rel(r.location.file, root)}:{r.location.start_line}  "
-                          f"[dim]{r.detail} · {r.module}[/dim]{mark}", highlight=False,
+            console.print(f"  {E(_rel(r.location.file, root))}:{r.location.start_line}  "
+                          f"[dim]{E(r.detail)} · {E(str(r.module))}[/dim]{mark}", highlight=False,
                           soft_wrap=True)

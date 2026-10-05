@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape as E
 
 from odx.clients.cli import config as cfgmod
 from odx.clients.edits import PlanApplyError, apply_plan, render_plan
@@ -54,7 +55,7 @@ def engine(proj: Project) -> Engine:
 
 
 def fail(msg: str, code: int = 1) -> None:
-    err_console.print(f"[red]error:[/red] {msg}", highlight=False)
+    err_console.print(f"[red]error:[/red] {E(msg)}", highlight=False)
     raise typer.Exit(code)
 
 
@@ -97,8 +98,8 @@ def show_diagnostics(diags: list[Diagnostic]) -> bool:
     styles = {Severity.ERROR: "red", Severity.WARNING: "yellow"}
     for d in diags:
         style = styles.get(d.severity, "cyan")
-        err_console.print(f"[{style}]{d.severity.value}[/{style}] {d.message} "
-                          f"[dim]({d.code})[/dim]", highlight=False)
+        err_console.print(f"[{style}]{d.severity.value}[/{style}] {E(d.message)} "
+                          f"[dim]({E(d.code)})[/dim]", highlight=False)
     return any(d.severity is Severity.ERROR for d in diags)
 
 
