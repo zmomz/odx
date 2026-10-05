@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from odx.engine.generators.engine_glue import _GeneratorMixin
 from odx.engine.contracts import (
     AccessRule,
     Diagnostic,
@@ -29,7 +30,7 @@ from odx.engine.contracts import (
 ALL: Final[Scope] = Scope("all")
 
 
-class Engine:
+class Engine(_GeneratorMixin):
     """Static semantic engine over an Odoo project (addons tree)."""
 
     def __init__(self, project_root: Path) -> None:
@@ -71,17 +72,9 @@ class Engine:
         raise NotImplementedError("report lands in Phase 4")
 
     # -- generate / fix (-> EditPlan; never writes) ----------------------- #
-    def new_module(self, spec) -> EditPlan:
-        raise NotImplementedError("generators land in Phase 2")
-
-    def new_model(self, spec) -> EditPlan:
-        raise NotImplementedError
-
-    def add_field(self, spec) -> EditPlan:
-        raise NotImplementedError
-
-    def add_view(self, spec) -> EditPlan:
-        raise NotImplementedError
+    # new_module / new_model / new_wizard / new_report / new_controller /
+    # add_field / add_view / add_menu / validate_field: see _GeneratorMixin
+    # (odx/engine/generators/engine_glue.py).
 
     def fix(self, scope: Scope = ALL) -> EditPlan:
         raise NotImplementedError

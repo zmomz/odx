@@ -18,6 +18,7 @@ keywords = ["odoo", "static-analysis", "semantic-engine", "cli"]
 dependencies = [
     "typer>=0.12",          # CLI client (clients/cli only)
     "rich>=13.0",           # rendering (clients only)
+    "jinja2>=3.1",          # generator templates (engine/generators, Phase 2)
 ]
 
 [project.optional-dependencies]

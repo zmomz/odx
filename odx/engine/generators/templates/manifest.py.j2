@@ -1,0 +1,21 @@
+# -*- coding: utf-8 -*-
+{
+    'name': {{ title|py }},
+    'version': {{ spec.version|py }},
+    'summary': {{ spec.summary|py }},
+    'category': {{ spec.category|py }},
+    'author': {{ spec.author|py }},
+    'license': {{ spec.license|py }},
+    'depends': [
+{% for d in spec.depends %}
+        {{ d|py }},
+{% endfor %}
+    ],
+    'data': [
+{% for f in data %}
+        {{ f|py }},
+{% endfor %}
+    ],
+    'installable': True,
+    'application': {{ spec.application|py }},
+}

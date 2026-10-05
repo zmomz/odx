@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from odx.clients.cli import config as cfgmod
+from odx.clients.cli import scaffold_cmds as sc
 from odx.runtime import detect_runtime
 
 console = Console()
@@ -230,67 +231,212 @@ app.add_typer(diff_app, name="diff")
 app.add_typer(upgrade_app, name="upgrade")
 
 
+_DRY = typer.Option(False, "--dry-run", help="Show the plan; write nothing.")
+_MODULE = typer.Option(None, "--module", "-m",
+                       help="Target module (default: the module you're in, or the only one).")
+
+
 @new_app.command("module")
-def new_module(name: str) -> None:
-    """Scaffold a new module."""
-    _stub(f"new module {name}", "Phase 2 (scaffolding)", writes=True)
+def new_module(
+    name: str,
+    path: Path = typer.Option(None, "--path", help="Addons directory (default: first addons path)."),
+    depends: str = typer.Option("base", "--depends", help="Comma list of dependencies."),
+    summary: str = typer.Option("", "--summary", help="One-line summary."),
+    author: str = typer.Option("", "--author", help="Author."),
+    application: bool = typer.Option(False, "--application", help="Mark as an application."),
+    dry_run: bool = _DRY,
+) -> None:
+    """Scaffold a new module.  e.g. [bold]odx new module library --depends base,mail[/bold]"""
+    from odx.engine.contracts import ModuleSpec
+    proj = sc.project()
+    eng = sc.engine(proj)
+    spec = ModuleSpec(name=name, addons_path=(path or proj.addons_paths[0]).resolve(),
+                      summary=summary, depends=sc.split_csv(depends), author=author,
+                      version=f"{proj.version}.1.0.0", application=application)
+    sc.emit(sc.plan_or_fail(lambda: eng.new_module(spec)), dry_run)
+
+
+def _model_cmd(name: str, module: str | None, description: str, inherit: str | None,
+               kind: str, views: bool, access: bool, menu: bool, dry_run: bool,
+               wizard: bool = False) -> None:
+    from odx.engine.contracts import ModelSpec
+    proj = sc.project()
+    eng = sc.engine(proj)
+    spec = ModelSpec(name=name, module=sc.resolve_module(proj, module),
+                     description=description, kind=kind, inherit=sc.split_csv(inherit),
+                     with_views=views, with_access=access, with_menu=menu)
+    make = eng.new_wizard if wizard else eng.new_model
+    sc.emit(sc.plan_or_fail(lambda: make(spec)), dry_run)
 
 
 @new_app.command("model")
-def new_model(name: str) -> None:
-    """Scaffold a new model."""
-    _stub(f"new model {name}", "Phase 2 (scaffolding)", writes=True)
+def new_model(
+    name: str,
+    module: str = _MODULE,
+    description: str = typer.Option("", "--description", help="_description (default: from name)."),
+    inherit: str = typer.Option(None, "--inherit", help="Comma list of _inherit parents."),
+    kind: str = typer.Option("Model", "--kind", help="Model | TransientModel | AbstractModel."),
+    views: bool = typer.Option(True, "--views/--no-views", help="Generate form/list/search views."),
+    access: bool = typer.Option(True, "--access/--no-access", help="Add an ACL row."),
+    menu: bool = typer.Option(True, "--menu/--no-menu", help="Add a window action menu."),
+    dry_run: bool = _DRY,
+) -> None:
+    """Scaffold a new model.  e.g. [bold]odx new model library.book[/bold]"""
+    _model_cmd(name, module, description, inherit, kind, views, access, menu, dry_run)
 
 
 @new_app.command("wizard")
-def new_wizard(name: str) -> None:
-    """Scaffold a transient wizard model."""
-    _stub(f"new wizard {name}", "Phase 2 (scaffolding)", writes=True)
+def new_wizard(
+    name: str,
+    module: str = _MODULE,
+    description: str = typer.Option("", "--description", help="_description."),
+    dry_run: bool = _DRY,
+) -> None:
+    """Scaffold a transient wizard model.  e.g. [bold]odx new wizard library.book.import[/bold]"""
+    _model_cmd(name, module, description, None, "TransientModel", True, True, False,
+               dry_run, wizard=True)
 
 
 @new_app.command("report")
-def new_report(name: str) -> None:
-    """Scaffold a QWeb report."""
-    _stub(f"new report {name}", "Phase 2 (scaffolding)", writes=True)
+def new_report(
+    name: str,
+    model: str = typer.Option(..., "--model", help="Model the report prints."),
+    module: str = _MODULE,
+    title: str = typer.Option("", "--title", help="Report title (default: from name)."),
+    dry_run: bool = _DRY,
+) -> None:
+    """Scaffold a QWeb report.  e.g. [bold]odx new report book_card --model library.book[/bold]"""
+    from odx.engine.generators import ReportSpec
+    proj = sc.project()
+    eng = sc.engine(proj)
+    spec = ReportSpec(name=name, module=sc.resolve_module(proj, module), model=model,
+                      title=title)
+    sc.emit(sc.plan_or_fail(lambda: eng.new_report(spec)), dry_run)
 
 
 @new_app.command("controller")
-def new_controller(name: str) -> None:
-    """Scaffold an HTTP controller."""
-    _stub(f"new controller {name}", "Phase 2 (scaffolding)", writes=True)
+def new_controller(
+    name: str,
+    module: str = _MODULE,
+    route: str = typer.Option(None, "--route", help="URL (default: /<module>/<name>)."),
+    auth: str = typer.Option("user", "--auth", help="user | public | none."),
+    dry_run: bool = _DRY,
+) -> None:
+    """Scaffold an HTTP controller.  e.g. [bold]odx new controller library[/bold]"""
+    from odx.engine.generators import ControllerSpec
+    proj = sc.project()
+    eng = sc.engine(proj)
+    spec = ControllerSpec(name=name, module=sc.resolve_module(proj, module), route=route,
+                          auth=auth)
+    sc.emit(sc.plan_or_fail(lambda: eng.new_controller(spec)), dry_run)
 
 
 @add_app.command("field")
 def add_field(
     name: str,
     to: str = typer.Option(..., "--to", help="Target model."),
+    type_: str = typer.Option(None, "--type", help="Field type (default: guessed from the name, confirmed)."),
+    comodel: str = typer.Option(None, "--comodel", help="Relational target model."),
+    inverse: str = typer.Option(None, "--inverse", help="One2many inverse field."),
+    relation: str = typer.Option(None, "--relation", help="Many2many relation table."),
+    required: bool = typer.Option(False, "--required", help="required=True."),
+    string: str = typer.Option(None, "--string", help="Label."),
+    selection: str = typer.Option(None, "--selection", help='Selection options "key:Label,key2:Label 2".'),
+    default: str = typer.Option(None, "--default", help="Default as a Python literal, e.g. \"'draft'\"."),
+    currency_field: str = typer.Option(None, "--currency-field", help="Monetary currency field."),
+    compute: str = typer.Option(None, "--compute", help="Compute method name."),
+    depends: str = typer.Option(None, "--depends", help="Comma list of @api.depends paths."),
+    store: bool = typer.Option(False, "--store", help="Store a computed field."),
+    help_: str = typer.Option(None, "--help-text", help="Field tooltip (help=)."),
+    module: str = typer.Option(None, "--module", "-m", help="Module that gets the edit."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Accept guesses; don't prompt."),
+    dry_run: bool = _DRY,
 ) -> None:
-    """Add a field to a model (field-type matrix, §16)."""
-    _stub(f"add field {name} --to {to}", "Phase 2/4 (scaffolding + validation)", writes=True)
+    """Add a field to a model (field-type matrix, §16).
+
+    e.g. [bold]odx add field partner_id --to library.book --comodel res.partner[/bold]
+    """
+    from odx.engine.contracts import FieldSpec
+    from odx.engine.generators import guess_type, normalize_type
+    proj = sc.project()
+    eng = sc.engine(proj)
+    ftype = type_
+    if not ftype:
+        guesses = guess_type(name)
+        if yes:
+            ftype = guesses[0]
+        else:
+            ftype = typer.prompt(f"Field type (suggested: {', '.join(guesses)})",
+                                 default=guesses[0])
+    ftype = normalize_type(ftype) or ftype
+    if not yes and ftype in ("Many2one", "One2many", "Many2many") and not comodel:
+        comodel = typer.prompt("Comodel (target model)")
+    if not yes and ftype == "One2many" and not inverse:
+        inverse = typer.prompt(f"Inverse Many2one field on {comodel}")
+    options = sc.parse_options(selection)
+    if not yes and ftype == "Selection" and not options:
+        options = sc.parse_options(typer.prompt('Options ("key:Label,key2:Label 2")'))
+    spec = FieldSpec(model=to, name=name, type=ftype, module=module, string=string,
+                     comodel=comodel, inverse_name=inverse, relation=relation,
+                     required=required, default=default, help=help_, options=options,
+                     currency_field=currency_field, compute=compute,
+                     depends=sc.split_csv(depends), store=store)
+    if sc.show_diagnostics(eng.validate_field(spec)):
+        raise typer.Exit(1)
+    sc.emit(sc.plan_or_fail(lambda: eng.add_field(spec)), dry_run)
 
 
 @add_app.command("view")
 def add_view(
     kind: str,
     for_: str = typer.Option(..., "--for", help="Target model."),
+    module: str = _MODULE,
+    fields: str = typer.Option(None, "--fields", help="Comma list of fields (default: all known)."),
+    dry_run: bool = _DRY,
 ) -> None:
-    """Add a view for a model."""
-    _stub(f"add view {kind} --for {for_}", "Phase 2 (scaffolding)", writes=True)
+    """Add a view for a model.  e.g. [bold]odx add view kanban --for library.book[/bold]"""
+    from odx.engine.contracts import ViewSpec
+    proj = sc.project()
+    eng = sc.engine(proj)
+    spec = ViewSpec(model=for_, kind=kind, module=sc.resolve_module(proj, module),
+                    fields=sc.split_csv(fields))
+    sc.emit(sc.plan_or_fail(lambda: eng.add_view(spec)), dry_run)
 
 
 @add_app.command("menu")
 def add_menu(
     label: str,
-    under: str = typer.Option(..., "--under", help="Parent menu."),
+    under: str = typer.Option(None, "--under", help="Parent menu xmlid (default: top level)."),
+    model: str = typer.Option(None, "--model", help="Open this model's list (creates an action)."),
+    action: str = typer.Option(None, "--action", help="Existing action xmlid."),
+    module: str = _MODULE,
+    dry_run: bool = _DRY,
 ) -> None:
-    """Add a menu item."""
-    _stub(f'add menu "{label}" --under {under}', "Phase 2 (scaffolding)", writes=True)
+    """Add a menu item.  e.g. [bold]odx add menu "Books" --under library.menu_root --model library.book[/bold]"""
+    from odx.engine.contracts import MenuSpec
+    proj = sc.project()
+    eng = sc.engine(proj)
+    spec = MenuSpec(label=label, module=sc.resolve_module(proj, module), parent=under,
+                    model=model, action=action)
+    sc.emit(sc.plan_or_fail(lambda: eng.add_menu(spec)), dry_run)
 
 
 @inherit_app.command("view")
-def inherit_view(xmlid: str) -> None:
-    """Scaffold an inherited view for an existing view xmlid."""
-    _stub(f"inherit view {xmlid}", "Phase 2 (scaffolding)", writes=True)
+def inherit_view(
+    xmlid: str,
+    model: str = typer.Option(None, "--model", help="Model of the view (default: looked up)."),
+    kind: str = typer.Option("form", "--kind", help="form | list | kanban | search."),
+    fields: str = typer.Option(None, "--fields", help="Comma list of fields to insert."),
+    module: str = _MODULE,
+    dry_run: bool = _DRY,
+) -> None:
+    """Scaffold an inherited view.  e.g. [bold]odx inherit view base.view_partner_form --fields x_note[/bold]"""
+    from odx.engine.contracts import ViewSpec
+    proj = sc.project()
+    eng = sc.engine(proj)
+    spec = ViewSpec(model=model or "", kind=kind, module=sc.resolve_module(proj, module),
+                    inherit_xmlid=xmlid, fields=sc.split_csv(fields))
+    sc.emit(sc.plan_or_fail(lambda: eng.add_view(spec)), dry_run)
 
 
 @db_app.command("list")
