@@ -65,3 +65,21 @@ def test_full_reload(tmp_path):
     root, eng = _engine(tmp_path)
     eng.reload()
     assert eng.get_model("library.book") is not None
+
+
+def test_resolve_one_matches_the_full_build_without_a_global_rebuild():
+    from odx.engine.model.resolver import ModelResolver
+    from odx.engine.workspace import Workspace
+    ws = Workspace.load([FIXTURE])
+    r = ModelResolver(ws.graph)
+    full = r.resolve(ws.raw_python())
+    one = r.resolve_one("library.book")
+    assert one is not None
+    assert set(one.fields) == set(full["library.book"].fields)
+    for f in ("author_country_id", "reviewer_ids", "shelf_code", "email" if False else "title"):
+        a, b = one.fields[f], full["library.book"].fields[f]
+        assert a.resolution is b.resolution and a.info.attributes == b.info.attributes
+    # the full result was not disturbed (no duplicated notes from re-resolving)
+    again = r.resolve(ws.raw_python())["library.book"].fields["reviewer_ids"].notes
+    assert again.count("inverse-dangling") == 1
+    assert r.resolve_one("no.such.model") is None

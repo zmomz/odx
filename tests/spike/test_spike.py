@@ -210,27 +210,49 @@ def test_arch_record_resolution_high(arch_result):
     # the load-bearing view number: record-view locators found after correct,
     # registry-wide, load-ordered application. A regression that stops respecting
     # the primary boundary or the load order drops this — invisible to unit tests.
-    assert arch_result["record_resolved_pct"] >= 97.0
+    # Live after Odoo-parity application: 2261/2261. Small slack only for a
+    # re-cloned corpus whose upstream branch moved.
+    assert arch_result["record_resolved_pct"] >= 99.5
 
 
 def test_arch_dangling_stays_a_small_tail(arch_result):
     # genuine UNRESOLVED record danglers (Phase-4 candidates). Kept a small,
     # bounded tail; a jump means the applicator regressed to producing false
     # missing-targets (the exact false accusation the whole design guards against).
-    assert arch_result["record_dangling_after_apply"] <= 45
-    assert (arch_result["record_dangling_after_apply"]
-            / arch_result["record_locators"]) < 0.03
+    # The PHASE3 "30 genuine danglers" were applicator gaps ($0, <data>, default
+    # `inside`, all-attribute shorthand matching, ...). Now 0; a jump means a
+    # regression to false missing-targets.
+    assert arch_result["record_dangling_after_apply"] <= 5
+    assert arch_result["template_dangling_after_apply"] <= 5
 
 
-def test_arch_deferred_buckets_stay_first_class(arch_result):
-    # QWeb template inheritance (item 4) and %(xmlid)d interpolation (item 3) are
-    # DEFERRED, not defects: they must be tracked as their own honest buckets, not
-    # silently folded into danglers. Non-negative + present locks them first-class.
-    assert arch_result["qweb_deferred"] >= 0
-    assert arch_result["interpolation_deferred"] >= 0
-    # interpolation is announced DYNAMIC, never a silent no-match
-    assert "interpolation-deferred" in arch_result["reasons"] or \
-        arch_result["interpolation_deferred"] == 0
+def test_arch_deferred_buckets_are_closed(arch_result):
+    # view backlog items 3 (%(xmlid)d) and 4 (QWeb templates) are closed: nothing
+    # is parked as "deferred" any more. Optional (inactive) views are their own
+    # honest PARTIAL bucket, never folded into danglers.
+    assert arch_result["qweb_deferred"] == 0
+    assert arch_result["interpolation_deferred"] == 0
+    assert arch_result["inactive_view_misses"] >= 0
+
+
+def test_corpus_check_stays_quiet():
+    """The whole analyzer battery over Odoo 17 + OCA: Odoo core ships clean, so
+    findings must stay a small, triaged set (61 live, each genuine or a corpus
+    boundary). A jump is a false-accusation regression."""
+    from pathlib import Path
+    from odx.engine.api import Engine
+    from odx.engine.contracts import Scope
+    corpus = Path(DEFAULT_CORPUS)
+    if not corpus.is_dir():
+        pytest.skip("no corpus")
+    diags = Engine.load(corpus, addons_paths=[corpus]).check(Scope("all"))
+    by = {}
+    for d in diags:
+        by[d.code] = by.get(d.code, 0) + 1
+    assert len(diags) <= 120, by
+    assert by.get("view.xpath-target-missing", 0) <= 3, by
+    assert by.get("view.unknown-field", 0) <= 3, by
+    assert by.get("xmlid.unknown-ref", 0) <= 5, by
 
 
 def test_arch_dialect_gaps_are_announced_not_silent(arch_result):

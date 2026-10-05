@@ -76,7 +76,7 @@ accusation. The field-resolution backlog is now closed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from odx.engine.contracts import FieldInfo, Location, Provenance, Resolution
@@ -167,6 +167,7 @@ class ModelResolver:
     # public entry
     # ------------------------------------------------------------------ #
     def resolve(self, raw_modules: list[RawModule]) -> dict[str, ResolvedModel]:
+        self._last_raw = raw_modules
         work = self._merge_contributions(raw_modules)          # pass 1 — order & same-model merge
         _InheritanceMerger(work).run()                         # pass 1.5 — attr-merge across _inherit/_inherits
         _settle_comodels(work)                                 # pass 1.6 — re-derive comodel state post-merge
@@ -175,13 +176,48 @@ class ModelResolver:
         self._verify_inverses(work, eff)                       # pass 2.5 — one2many inverse discovery
         return self._materialize(work, eff)                    # pass 3 — freeze public contracts
 
-    def resolve_one(self, name: str) -> ResolvedModel | None:
-        """Recompute a single model from its contributing defs (RFC §8 — the
-        incremental path; a changed file dirties only the models it contributes
-        to plus their `dependents_of()` frontier). Deferred until the LSP turns
-        on the durable cache (docs/PHASE3.md); the seam is here so callers can
-        depend on it now."""
-        raise NotImplementedError("Phase 3 incremental path; activated at LSP (RFC §8)")
+    def resolve_one(self, name: str, raw_modules: list[RawModule] | None = None
+                    ) -> ResolvedModel | None:
+        """Recompute ONE model from its contributing defs (RFC §8), without a
+        global rebuild: only the raw classes in the model's dependency closure
+        are resolved — its `_inherit`/`_inherits` ancestors and the comodels its
+        `related`/inverse resolution can walk into (transitively). Resolution never
+        mutates raw parse results (fields are copied on intake), so the last
+        full result is untouched. `raw_modules` defaults to those given to the last `resolve`.
+        """
+        mods = raw_modules if raw_modules is not None else getattr(self, "_last_raw", None)
+        if not mods:
+            return None
+        by_name: dict[str, list[RawModel]] = {}
+        for rmod in mods:
+            for rm in rmod.models:
+                if rm.effective_name:
+                    by_name.setdefault(rm.effective_name, []).append(rm)
+        need: set[str] = set()
+        stack = [name]
+        while stack:
+            m = stack.pop()
+            if m in need or m not in by_name:
+                continue
+            need.add(m)
+            for rm in by_name[m]:
+                stack.extend(p for p in rm.inherit if p != m)
+                stack.extend(rm.inherits)
+                for rf in rm.fields:
+                    if rf.comodel and ("related" in rf.attrs or rf.ftype == "One2many"
+                                       or any(r for r in by_name.get(rf.comodel, ()))):
+                        stack.append(rf.comodel)
+        subset: list[RawModule] = []
+        for rmod in mods:
+            keep = [rm for rm in rmod.models if rm.effective_name in need]
+            if keep:
+                subset.append(RawModule(file=rmod.file, module=rmod.module, models=keep))
+        saved = getattr(self, "_last_raw", None)
+        try:
+            out = self.resolve(subset).get(name)
+        finally:
+            self._last_raw = saved
+        return out
 
     # ------------------------------------------------------------------ #
     # pass 1 — group contributions by effective model name, ordered by load order
@@ -250,6 +286,10 @@ class ModelResolver:
         # overrides. Entries reach us in load order (see _merge_contributions),
         # so the accumulated `wm.own[name]` is the base and `rf` is the override.
         for rf in rm.fields:
+            # private copy: the passes below mutate comodel/resolution/notes, and
+            # the raw parse result must stay pristine (re-resolved on every
+            # incremental reload, cached durably, shared with resolve_one)
+            rf = replace(rf, notes=list(rf.notes), attrs=dict(rf.attrs), exprs=dict(rf.exprs))
             if rf.name in wm.own:
                 wm.own[rf.name] = _merge_field(wm.own[rf.name], rf)
             else:
