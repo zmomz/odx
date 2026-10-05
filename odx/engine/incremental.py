@@ -22,10 +22,15 @@ from pathlib import Path
 from odx.engine.contracts import Scope
 from odx.engine.loadorder import MANIFEST_NAMES, parse_manifest
 from odx.engine.parser.csv import parse_csv
-from odx.engine.parser.python import parse_python
 from odx.engine.parser.xml import parse_xml
 from odx.engine.pipeline import BuildResult, build
-from odx.engine.workspace import Workspace, declared_data_files, file_hash, parse_module
+from odx.engine.workspace import (
+    Workspace,
+    declared_data_files,
+    file_hash,
+    parse_module,
+    parse_python_cached,
+)
 
 
 @dataclass
@@ -67,10 +72,12 @@ def dependents_closure(result: BuildResult, models: set[str]) -> set[str]:
 
 
 class IncrementalPipeline:
-    def __init__(self, paths: list[Path], project_paths: list[Path] | None = None) -> None:
+    def __init__(self, paths: list[Path], project_paths: list[Path] | None = None,
+                 cache=None) -> None:
         self.paths = [Path(p) for p in paths]
         self.project_paths = [Path(p) for p in (project_paths or paths)]
-        self.ws = Workspace.load(self.paths, project_paths=self.project_paths)
+        self.cache = cache
+        self.ws = Workspace.load(self.paths, project_paths=self.project_paths, cache=cache)
         self.result: BuildResult = build(self.ws)
         self.invalidation = Invalidation()
 
@@ -103,7 +110,7 @@ class IncrementalPipeline:
                 old = self.ws.modules.get(mf.name)
                 if old is not None:
                     before_files |= {str(x) for x in self.ws.files_of(mf.name)}
-                self.ws.modules[mf.name] = parse_module(mf)
+                self.ws.modules[mf.name] = parse_module(mf, self.cache)
                 if any(Path(mf.path).resolve() == p.resolve() or p.resolve() in Path(mf.path).resolve().parents
                        for p in self.project_paths):
                     self.ws.project_modules.add(mf.name)
@@ -121,7 +128,7 @@ class IncrementalPipeline:
             if f.suffix == ".py":
                 ms.python = [m for m in ms.python if Path(m.file).resolve() != f]
                 if f.exists():
-                    ms.python.append(parse_python(f, module))
+                    ms.python.append(parse_python_cached(f, module, self.cache))
             elif f.suffix in (".xml", ".csv"):
                 declared = {str((ms.path / rel).resolve()) for rel, _ in
                             declared_data_files(ms.manifest)}

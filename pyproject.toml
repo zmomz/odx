@@ -31,9 +31,12 @@ dev = [
 [project.scripts]
 odx = "odx.clients.cli.main:app"
 odx-mcp = "odx.clients.mcp.server:main"
+odx-lsp = "odx.clients.lsp.server:main"
+odx-web = "odx.clients.web.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["odx"]
+# package data (generator templates, the web browser page) ships inside odx/
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

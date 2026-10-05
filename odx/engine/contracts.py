@@ -155,6 +155,8 @@ class ModelSummary:
     complete: bool = False
     modules: list[str] = dc_field(default_factory=list)
     resolution: Resolution = Resolution.STATIC
+    parents: list[str] = dc_field(default_factory=list)      # _inherit (prototype) parents
+    delegates: list[str] = dc_field(default_factory=list)    # _inherits targets
 
 
 @dataclass(frozen=True)

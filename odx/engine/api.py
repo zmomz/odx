@@ -25,6 +25,7 @@ from odx.engine.contracts import (
     FieldSpec,
     HealthReport,
     InstallProbe,
+    Location,
     ModelInfo,
     ModelSummary,
     Reference,
@@ -47,11 +48,14 @@ class Engine(_GeneratorMixin):
 
     def __init__(self, project_root: Path, *, addons_paths: list[Path] | None = None,
                  context_paths: list[Path] | None = None,
-                 odoo_version: str | None = None) -> None:
+                 odoo_version: str | None = None, cache: bool | Path = False) -> None:
         self.project_root = Path(project_root)
-        self._context_paths = [Path(p) for p in context_paths or []]
+        self.cache = cache
+        # absolute paths: every Location the engine emits is then absolute, so
+        # editors/CI can match files without guessing a base directory
+        self._context_paths = [Path(p).resolve() for p in context_paths or []]
         self.odoo_version = odoo_version
-        self._addons_paths = [Path(p) for p in addons_paths] if addons_paths else None
+        self._addons_paths = [Path(p).resolve() for p in addons_paths] if addons_paths else None
         self._build = None
         self._incremental = None
 
@@ -59,17 +63,22 @@ class Engine(_GeneratorMixin):
     @classmethod
     def load(cls, project_root: Path, *, addons_paths: list[Path] | None = None,
              context_paths: list[Path] | None = None,
-             odoo_version: str | None = None) -> "Engine":
+             odoo_version: str | None = None, cache: bool | Path | None = None) -> "Engine":
         """Engine over `project_root`. Without explicit paths, `.odx.toml`
-        (at/above the root) supplies them; else the root is the addons path."""
+        (at/above the root) supplies them; else the root is the addons path.
+        `cache`: True / a directory enables the durable parse cache (RFC §8);
+        None defers to `[engine] cache` in the config."""
         root = Path(project_root)
         if addons_paths is None and context_paths is None:
             cfg = load_config(root)
+            if cache is None:
+                eng = cfg.raw.get("engine", {}) if isinstance(cfg.raw.get("engine"), dict) else {}
+                cache = bool(eng.get("cache", False))
             return cls(cfg.root if cfg.raw else root, addons_paths=list(cfg.project_paths),
                        context_paths=list(cfg.context_paths),
-                       odoo_version=odoo_version or cfg.odoo_version)
+                       odoo_version=odoo_version or cfg.odoo_version, cache=bool(cache) and cache)
         return cls(root, addons_paths=addons_paths, context_paths=context_paths,
-                   odoo_version=odoo_version)
+                   odoo_version=odoo_version, cache=cache or False)
 
     @classmethod
     def from_config(cls, cfg: EngineConfig) -> "Engine":
@@ -92,7 +101,11 @@ class Engine(_GeneratorMixin):
             from odx.engine.incremental import IncrementalPipeline
             project = self.addons_paths()
             paths = list(project) + [p for p in self._context_paths if p not in project]
-            self._incremental = IncrementalPipeline(paths, project_paths=project)
+            cache = None
+            if self.cache:
+                from odx.engine.cache import ParseCache
+                cache = ParseCache(None if self.cache is True else Path(self.cache))
+            self._incremental = IncrementalPipeline(paths, project_paths=project, cache=cache)
             self._build = self._incremental.result
         return self._build
 
@@ -135,7 +148,8 @@ class Engine(_GeneratorMixin):
                 continue
             out.append(ModelSummary(name=name, kind=m.kind, defined_in=m.defined_in,
                                     complete=self.api.is_complete(name), modules=mods,
-                                    resolution=m.resolution))
+                                    resolution=m.resolution, parents=list(m.inherit_chain),
+                                    delegates=list(m.delegates)))
         return out
 
     def discover_modules(self) -> list[str]:
@@ -150,6 +164,47 @@ class Engine(_GeneratorMixin):
         for d in (p, *p.parents):
             if any((d / n).is_file() for n in MANIFEST_NAMES):
                 return d.name
+        return None
+
+    # -- position queries (editor clients) -------------------------------- #
+    def references_in_file(self, path: Path) -> list[Reference]:
+        """Every reference ORIGINATING in `path` (what an editor resolves the
+        cursor against)."""
+        return [e.to_reference() for e in self.api.index.in_file(Path(path).resolve())]
+
+    def fields_defined_in(self, path: Path) -> list[tuple[str, FieldInfo]]:
+        """(model, field) declared in a Python file, with their locations."""
+        p = Path(path).resolve()
+        out: list[tuple[str, FieldInfo]] = []
+        for name, m in self.api.resolved_models().items():
+            for fname, rf in m.fields.items():
+                loc = rf.info.location
+                if loc is not None and Path(loc.file).resolve() == p and rf.provenance.via == "own":
+                    out.append((name, self.api.get_field(name, fname)))
+        return out
+
+    def xmlid_location(self, xmlid: str) -> Location | None:
+        d = self.api.xmlids.definition(xmlid)
+        return d.location if d else None
+
+    def view_model_at(self, path: Path, line: int) -> str | None:
+        """The model of the view record enclosing `path:line` (None if none)."""
+        p = Path(path).resolve()
+        best = None
+        for v in self.api.raw_views():
+            if v.location is None or Path(v.location.file).resolve() != p:
+                continue
+            if v.location.start_line <= line and (best is None or
+                                                  v.location.start_line > best.location.start_line):
+                best = v
+        if best is None:
+            return None
+        cur, seen = best, set()
+        while cur is not None and cur.xmlid not in seen:
+            seen.add(cur.xmlid)
+            if cur.model:
+                return cur.model
+            cur = self.api.raw_view(cur.inherit_ref) if cur.inherit_ref else None
         return None
 
     def warm(self) -> None:

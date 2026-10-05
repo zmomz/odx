@@ -87,6 +87,9 @@ dev = "all"
 
 [logs]
 scope = {logs_scope}
+
+[engine]
+cache = true                     # durable parse cache (~/.cache/odx); speeds up re-runs
 """
 
 

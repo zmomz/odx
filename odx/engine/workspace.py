@@ -89,10 +89,22 @@ def declared_data_files(manifest: Manifest) -> list[tuple[str, bool]]:
     return out
 
 
-def parse_module(manifest: Manifest) -> ModuleSources:
+def parse_python_cached(py: Path, module: str, cache=None) -> RawModule:
+    if cache is None:
+        return parse_python(py, module)
+    h = file_hash(py)
+    hit = cache.get(py, h)
+    if hit is not None and hit.module == module:
+        return hit
+    rm = parse_python(py, module)
+    cache.put(py, h, rm)
+    return rm
+
+
+def parse_module(manifest: Manifest, cache=None) -> ModuleSources:
     ms = ModuleSources(name=manifest.name, manifest=manifest)
     for py in python_files(manifest.path):
-        ms.python.append(parse_python(py, manifest.name))
+        ms.python.append(parse_python_cached(py, manifest.name, cache))
     for rel, is_demo in declared_data_files(manifest):
         p = manifest.path / rel
         if not p.is_file():
@@ -119,7 +131,7 @@ class Workspace:
 
     @classmethod
     def load(cls, addons_paths: list[Path], *, project_paths: list[Path] | None = None,
-             modules: set[str] | None = None) -> "Workspace":
+             modules: set[str] | None = None, cache=None) -> "Workspace":
         graph = ModuleGraph.discover(*addons_paths)
         ws = cls(graph=graph)
         roots = [Path(p).resolve() for p in (project_paths if project_paths is not None
@@ -127,7 +139,7 @@ class Workspace:
         for name, mf in graph.manifests.items():
             if modules is not None and name not in modules:
                 continue
-            ms = parse_module(mf)
+            ms = parse_module(mf, cache)
             ws.modules[name] = ms
             mpath = Path(mf.path).resolve()
             if any(mpath == r or r in mpath.parents for r in roots):

@@ -50,7 +50,10 @@ everything sits on it. The rest are typed skeletons graduating from the spikes.
 | `model/raw.py` | public `RawModel`/`RawField`/`RawView` types | implemented |
 | `model/resolver.py` | `RawModel → ResolvedModel`, provenance, `related=` worklist fixpoint, field-override attribute merge, one2many inverse discovery | **implemented** (field-resolution backlog closed — items 1, 2 & 3 done) |
 | `model/xpath.py` | Odoo XPath **dialect gate** + `%(id)d` interpolation | **audited complete** (`hasclass` is the only extension used corpus-wide; `assert_complete()` gate + full XPath-1.0 builtin set; unknown fn → announced) |
-| `model/arch.py` | `EffectiveArchBuilder` — ordered cohort application | **implemented** (registry-wide, primary-aware, load-order+priority; honest `unresolved_locators`, no Diagnostics) |
+| `model/arch.py` | `EffectiveArchBuilder` — ordered cohort application | **implemented to Odoo parity** (registry-wide, primary-aware, load-order+priority, per-node + per-attribute provenance; 100% record / 97% template locators live) |
+| `index/` | §7 semantic index — 33 reference kinds + XML-ID graph, honest per-entry Resolution, targeted invalidation | **implemented** (~148k refs live) |
+| `semantic_api/` | the read-only surface analyzers/generators consult | **implemented** |
+| `workspace.py` / `pipeline.py` / `incremental.py` / `cache.py` | parse stage, full build, per-file incremental rebuild, durable parse cache | **implemented** |
 
 ## Hard constraints (violate these and you erode trust)
 
@@ -196,20 +199,36 @@ separate `report` bucket).
    resolved; a genuine dangle → `unresolved_locators` UNRESOLVED (Phase-4
    candidate, not accused here); a limitation (dialect/interpolation/eval-inherit/
    base-outside-corpus) → DYNAMIC announced.
-3. `%(xmlid)d/s` interpolation before evaluation. **Deferred** (17 live locators).
-   `xpath.resolve_interpolation`/`has_interpolation` exist; the applicator detects
-   and marks them **DYNAMIC (`interpolation-deferred`)** rather than silently
-   no-matching. Resolving needs the XML-ID → id map (the semantic index).
-4. QWeb `<template>` inheritance (shares the mechanism; own `t-` directives).
-   **Deferred** (48 live template locators unresolved of ~900). Templates build an
-   effective view but are marked **PARTIAL (`qweb-deferred`)** — improvable, not a
-   defect and not runtime-derived.
-5. Genuine dangling locators → `view.xpath-target-missing` (Phase 4, gated on #1–2,
-   now met). The 30 record danglers are recorded as honest UNRESOLVED state; the
-   accusation is the Phase-4 analyzer's job (applicator-before-analyzer). The live
-   residue is dominated by the `res.users` multi-form family (targets added in a
-   sibling primary tree) plus a couple of real Odoo source typos
-   (`res_useurs_view_form_profile`).
+3. ~~`%(xmlid)d/s` interpolation before evaluation.~~ **Done** — without an
+   id table: `%(id)d` is canonicalized to `%(module.id)d` on BOTH sides (arch
+   attribute values when tagged, locator exprs at application), so a locator
+   matches exactly when Odoo's id substitution would make it match. Live: 18 → 0.
+4. ~~QWeb `<template>` inheritance.~~ **Done** — templates inherit through the
+   same mechanism once the arch root is Odoo's `<t t-name=…>` wrapper. Live:
+   876/900 resolved; the other 24 belong to optional (`active="False"`) views,
+   which Odoo doesn't apply by default — checked alone against the default tree
+   and recorded PARTIAL (`inactive-view`), never accused.
+5. ~~Genuine dangling locators → `view.xpath-target-missing`.~~ **Done, and the
+   "30 genuine danglers" were applicator gaps.** The confirm-live-state step
+   overturned the framing a fifth time: every one of them was a construct the
+   applicator didn't model yet, now implemented to Odoo parity
+   (`ir_ui_view.apply_inheritance_specs` / `locate_node`):
+     - every top-level element of an extension arch is a spec; a shorthand
+       without `position` defaults to `inside` (`<tree><field/></tree>`);
+     - `<data>` wrappers are unwrapped into their specs;
+     - shorthand matching compares ALL spec attributes, not just `name`
+       (`<t t-set="address" position="replace"/>` used to match the root `<t>`);
+     - `position="replace"` with `$0` (wrap), `mode="inner"`, and `position="move"`;
+     - relative locators are evaluated on the view root (`field[@name='x']`);
+     - `<attribute add=… remove=… separator=…>` (Odoo 17);
+     - co-install conflicts: a directive failing on the registry-wide tree is
+       re-checked on the tree its own module sees (cohort ∩ its dependency
+       closure); applying there means alternatives that are never installed
+       together (all localizations rewriting one report) — PARTIAL.
+   Live: record locators **2261/2261 (100%)**, template dangling 0. The analyzer
+   ships gated on `xpath.assert_complete()`; on the whole corpus it reports 0
+   false accusations. (`res_useurs_view_form_profile` is a misspelled *id*,
+   harmless — it was never a dangling target.)
 
 ## Not in Phase 3 scope (deferred per RFC)
 - Durable cache + true incremental activation (structures exist now; turned on at

@@ -38,7 +38,7 @@ A semantic tool for real Odoo codebases: scaffold, check, and understand your
 addons without booting Odoo. CLI is the first of several thin clients over one
 engine.
 
-[dim]Grammar:[/dim] odx <verb> <noun> [target] [--flags]
+[dim]Grammar:[/dim] odx <verb> <noun> \\[target] \\[--flags]
 """
 
 app = typer.Typer(
