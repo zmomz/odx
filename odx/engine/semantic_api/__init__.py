@@ -79,6 +79,15 @@ class SemanticAPI:
     def closure_is_complete(self, module: str) -> bool:
         return self.ws.closure_is_complete(module)
 
+    def dynamic_modules(self) -> set[str]:
+        """Modules declaring runtime-named models (`_name = 'x.%s' % y`): an
+        unknown model/id referenced from there may be one of those."""
+        if not hasattr(self, "_dyn_mods"):
+            self._dyn_mods = {rmod.module for rmod in self.ws.raw_python()
+                              for rm in rmod.models
+                              if rm.resolution is Resolution.DYNAMIC or "dynamic-name" in rm.notes}
+        return self._dyn_mods
+
     def module_of_file(self, path: Path) -> str | None:
         return self.ws.module_of_file(path)
 

@@ -119,8 +119,8 @@ class ModelCatalog:
         for name, m in models.items():
             local = model_xmlid_name(name)
             self.model_by_local.setdefault(local, name)
-            if m.defined_in:
-                self.model_by_xmlid[f"{m.defined_in}.{local}"] = name
+            for p in m.contributors:            # every contributing module reflects one
+                self.model_by_xmlid.setdefault(f"{p.module}.{local}", name)
             for fname, rf in m.fields.items():
                 mod = rf.info.defined_in or m.defined_in
                 if mod:

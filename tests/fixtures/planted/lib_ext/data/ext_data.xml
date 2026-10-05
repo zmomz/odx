@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="book_demo" model="library.book">
+        <field name="title">Dune</field>
+        <field name="subtitle">A novel</field>
+        <field name="author_id" ref="lib_core.author_missing"/>
+    </record>
+
+    <record id="author_keeper" model="library.author">
+        <field name="name">Keeper</field>
+        <field name="partner_id" ref="lib_other.partner_shelf_keeper"/>
+    </record>
+
+    <record id="author_twice" model="library.author">
+        <field name="name">Twice</field>
+    </record>
+    <record id="author_twice" model="library.author">
+        <field name="name">Twice</field>
+    </record>
+
+    <function model="library.book" name="_init_books"/>
+</odoo>

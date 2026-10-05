@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_book_form_ext" model="ir.ui.view">
+        <field name="name">library.book.form.ext</field>
+        <field name="model">library.book</field>
+        <field name="inherit_id" ref="lib_core.view_book_form"/>
+        <field name="arch" type="xml">
+            <field name="title" position="after">
+                <field name="pages_count"/>
+                <field name="shelf_code"/>
+                <field name="score" invisible="is_published"/>
+                <field name="author_id" domain="[('nickname', '=', 'x')]"/>
+            </field>
+            <xpath expr="//field[@name='nonexistent_anchor']" position="after">
+                <field name="rank"/>
+            </xpath>
+            <header position="inside">
+                <button name="action_publish" type="object" string="Publish"/>
+            </header>
+        </field>
+    </record>
+
+    <record id="action_book_ext" model="ir.actions.act_window">
+        <field name="name">Books (ext)</field>
+        <field name="res_model">library.book</field>
+        <field name="domain">[('archived', '=', False)]</field>
+    </record>
+
+    <record id="action_report_book_ext" model="ir.actions.report">
+        <field name="name">Book (ext)</field>
+        <field name="model">library.book</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">lib_ext.report_book_ext</field>
+    </record>
+
+    <template id="report_book_ext">
+        <t t-foreach="docs" t-as="o">
+            <span t-field="o.isbn13"/>
+        </t>
+    </template>
+</odoo>

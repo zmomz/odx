@@ -187,15 +187,28 @@ def test_hasclass_locator_resolves_not_flagged():
     assert ev.arch.xpath(".//field[@name='b']")
 
 
-def test_interpolation_locator_announced_dynamic():
-    base = _rec("A.v", arch="<form><button name='b'/></form>")
+def test_interpolation_locator_resolves_against_interpolated_arch():
+    # view backlog item 3 (closed): `%(xmlid)d` is canonicalized on BOTH sides —
+    # the base's button name (short form, relative to its module) and the
+    # locator's expr (full form) — so they match exactly when Odoo's id
+    # substitution would make them match.
+    base = _rec("A.v", arch="<form><button name='%(act)d' type='action'/></form>")
     ext = _rec("B.e", inherit="A.v",
                arch="<xpath expr=\"//button[@name='%(A.act)d']\" position='after'>"
                     "<field name='x'/></xpath>")
     eff = _build({"A": base, "B": ext}, {"A": [], "B": ["A"]})
     ev = eff["A.v"]
-    assert "interpolation-deferred" in _reasons(ev)
-    assert ev.unresolved_locators[0].resolution is Resolution.DYNAMIC
+    assert ev.unresolved_locators == []
+    assert ev.arch.xpath(".//field[@name='x']")
+
+
+def test_interpolation_locator_to_absent_button_is_a_genuine_dangle():
+    base = _rec("A.v", arch="<form><button name='b'/></form>")
+    ext = _rec("B.e", inherit="A.v",
+               arch="<xpath expr=\"//button[@name='%(A.act)d']\" position='after'>"
+                    "<field name='x'/></xpath>")
+    eff = _build({"A": base, "B": ext}, {"A": [], "B": ["A"]})
+    assert _reasons(eff["A.v"]) == {"target-not-found"}
 
 
 def test_inherit_id_via_eval_is_dynamic_view():
@@ -223,10 +236,56 @@ def test_base_outside_corpus_is_dynamic_not_dangling():
 # --------------------------------------------------------------------------- #
 # QWeb templates — deferred, first-class, never a defect (view backlog item 4)
 # --------------------------------------------------------------------------- #
-def test_template_effective_view_is_partial_not_static():
-    tpl = "<odoo><template id='t'><div>x</div></template></odoo>"
+def test_template_effective_view_is_static_with_t_root():
+    # view backlog item 4 (closed): templates inherit through the same
+    # mechanism; the arch root is Odoo's `<t t-name=...>` wrapper.
+    tpl = ("<odoo><template id='t'><div>x</div></template>"
+           "<template id='e' inherit_id='t'><xpath expr='//t/div' position='inside'>"
+           "<span>y</span></xpath></template></odoo>")
     eff = _build({"A": tpl}, {"A": []})
-    assert eff["A.t"].resolution is Resolution.PARTIAL   # t- inheritance not modelled
+    assert eff["A.t"].resolution is Resolution.STATIC
+    assert eff["A.t"].arch.xpath(".//t[@t-name='A.t']/div/span")
+
+
+def test_shorthand_matches_all_spec_attributes():
+    # Odoo's locate_node: a shorthand spec matches the first node whose
+    # attributes equal ALL the spec's (minus position) — not the first <t>.
+    tpl = ("<odoo><template id='t'><t t-set='a'/><t t-set='address'/></template>"
+           "<template id='e' inherit_id='t'><t t-set='address' position='replace'/>"
+           "</template></odoo>")
+    eff = _build({"A": tpl}, {"A": []})
+    arch = eff["A.t"].arch
+    assert arch.xpath(".//t[@t-set='a']") and not arch.xpath(".//t[@t-set='address']")
+
+
+def test_dollar0_wraps_the_replaced_node():
+    base = _rec("A.v", arch="<form><notebook><page name='p'/></notebook></form>")
+    ext = _rec("B.e", inherit="A.v",
+               arch="<notebook position='replace'><sheet>$0</sheet></notebook>"
+                    "<notebook position='before'><div name='bb'/></notebook>")
+    eff = _build({"A": base, "B": ext}, {"A": [], "B": ["A"]})
+    ev = eff["A.v"]
+    assert ev.unresolved_locators == []
+    assert ev.arch.xpath(".//sheet/notebook/page[@name='p']")
+
+
+def test_data_wrapper_and_default_inside_position():
+    base = _rec("A.v", arch="<tree><field name='a'/></tree>")
+    ext = _rec("B.e", inherit="A.v",
+               arch="<data><tree><field name='b'/></tree></data>")
+    eff = _build({"A": base, "B": ext}, {"A": [], "B": ["A"]})
+    assert eff["A.v"].arch.xpath(".//tree/field[@name='b']")
+
+
+def test_inactive_extension_is_not_applied_and_never_accused():
+    base = _rec("A.v", arch="<form><field name='a'/></form>")
+    ext = _rec("B.e", inherit="A.v",
+               arch="<field name='zzz' position='after'><field name='b'/></field>")
+    ext = ext.replace("<field name='arch'", "<field name='active' eval='False'/><field name='arch'")
+    eff = _build({"A": base, "B": ext}, {"A": [], "B": ["A"]})
+    ev = eff["A.v"]
+    assert not ev.arch.xpath(".//field[@name='b']")
+    assert all(u.resolution is Resolution.PARTIAL for u in ev.unresolved_locators)
 
 
 # --------------------------------------------------------------------------- #

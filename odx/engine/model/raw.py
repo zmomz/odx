@@ -126,6 +126,7 @@ class RawView:
     mode: str | None = None           # primary | extension (effective, defaulted)
     priority: int = 16                # Odoo `priority`; secondary apply-order key
     is_template: bool = False
+    active: bool = True               # inactive (optional/customize) views aren't applied
     arch = None                       # parsed arch element (lxml), or None
     locators: list[Locator] = field(default_factory=list)
     resolution: Resolution = Resolution.STATIC   # DYNAMIC if inherit_id via eval

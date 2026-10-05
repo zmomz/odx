@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_report_book" model="ir.actions.report">
+        <field name="name">Book</field>
+        <field name="model">library.book</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">lib_core.report_book</field>
+    </record>
+
+    <template id="report_book">
+        <t t-foreach="docs" t-as="o">
+            <div class="page">
+                <h2 t-field="o.title"/>
+                <span t-esc="o.author_id.name"/>
+                <span t-field="o.author_id.partner_id.country_id.name"/>
+            </div>
+        </t>
+    </template>
+</odoo>

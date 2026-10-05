@@ -73,22 +73,38 @@ def _int_or(value: str | None, default: int) -> int:
 
 
 def _synth_xpath(el: etree._Element) -> str | None:
-    """Best-effort xpath for a shorthand locator element.
-
-    Odoo matches the first element of the same tag with the same identifying
-    attributes (name, or otherwise). Mirror that heuristically.
-    """
+    """Odoo's shorthand locator: the first `<tag>` whose attributes equal ALL of
+    the spec's attributes except `position`/`version` (ir_ui_view locate_node)."""
     tag = el.tag
     if not isinstance(tag, str):
         return None
-    name = el.get("name")
-    if name is not None:
-        return f"//{tag}[@name='{name}']"
-    for attr in ("id", "t-name", "class"):
-        v = el.get(attr)
-        if v is not None:
-            return f"//{tag}[@{attr}='{v}']"
-    return f"//{tag}"
+    preds = []
+    for k, v in el.attrib.items():
+        if not isinstance(k, str) or k in ("position", "version") or k.startswith("odx-"):
+            continue
+        if "'" not in v:
+            lit = f"'{v}'"
+        elif '"' not in v:
+            lit = f'"{v}"'
+        else:
+            parts = v.split("'")
+            lit = "concat(" + ", \"'\", ".join(f"'{p}'" for p in parts) + ")"
+        preds.append(f"[@{k}={lit}]")
+    return f"//{tag}" + "".join(preds)
+
+
+def spec_elements(arch: etree._Element) -> list[etree._Element]:
+    """The inheritance specs of an extension arch, in order. Odoo unwraps a
+    `<data>` element into its children (`<data><xpath/>…</data>`)."""
+    out: list[etree._Element] = []
+    for el in arch:
+        if not isinstance(el.tag, str):
+            continue
+        if el.tag == "data":
+            out.extend(spec_elements(el))
+        else:
+            out.append(el)
+    return out
 
 
 def _extract_locators(arch: etree._Element | None, file: Path) -> list[Locator]:
@@ -103,7 +119,7 @@ def _extract_locators(arch: etree._Element | None, file: Path) -> list[Locator]:
     locators: list[Locator] = []
     if arch is None:
         return locators
-    for el in arch:
+    for el in spec_elements(arch):
         tag = el.tag
         if not isinstance(tag, str):            # comment / PI
             continue
@@ -114,7 +130,9 @@ def _extract_locators(arch: etree._Element | None, file: Path) -> list[Locator]:
                 location=_loc(el, file),
                 resolution=Resolution.STATIC if expr else Resolution.UNRESOLVED,
             ))
-        elif el.get("position") in POSITIONS:
+        else:
+            # Odoo: EVERY top-level element of an extension arch is a spec; a
+            # shorthand without `position` defaults to `inside`.
             expr = _synth_xpath(el)
             locators.append(Locator(
                 kind="shorthand", expr=expr, position=el.get("position"),
@@ -154,6 +172,8 @@ def _view_from_record(rec: etree._Element, module: str, file: Path) -> RawView:
             explicit_mode = (fld.text or "").strip() or None
         elif fname == "priority":
             vr.priority = _int_or((fld.text or fld.get("eval") or "").strip(), 16)
+        elif fname == "active":
+            vr.active = (fld.get("eval") or fld.text or "True").strip() not in ("False", "0", "false")
         elif fname == "arch":
             vr.arch = fld
             vr.locators = _extract_locators(fld, file)
@@ -175,6 +195,7 @@ def _view_from_template(tpl: etree._Element, module: str, file: Path) -> RawView
         priority=_int_or(tpl.get("priority"), 16),
     )
     vr.mode = _effective_mode(explicit_mode, inherit_ref)
+    vr.active = (tpl.get("active") or "True").strip() not in ("False", "0", "false")
     vr.arch = tpl
     vr.locators = _extract_locators(tpl, file)
     return vr
@@ -281,6 +302,14 @@ def _refs_from_root(root: etree._Element, module: str, file: Path) -> list[XmlId
             cur = cur.getparent()
         return None
 
+    def in_arch(el: etree._Element) -> bool:
+        cur = el
+        while cur is not None:
+            if cur.tag == "template" or (cur.tag == "field" and cur.get("name") == "arch"):
+                return True
+            cur = cur.getparent()
+        return False
+
     for el in root.iter():
         tag = el.tag
         if not isinstance(tag, str):
@@ -313,15 +342,13 @@ def _refs_from_root(root: etree._Element, module: str, file: Path) -> list[XmlId
                 for x in _REF_CALL.findall(val):
                     _add_ref(out, x, module, el, file,
                              f"eval:{el.get('name') or attr}", rmodel or record_model_of(el))
-            if "%(" in val:
-                for x in _INTERP.findall(val):
+            # `%(xmlid)d` is resolved by Odoo only inside view archs
+            # (ir.ui.view._resolve_external_ids); elsewhere `%(x)s` is plain
+            # text (address formats, sequence prefixes). `%%(` is an escape.
+            if "%(" in val and in_arch(el):
+                for x in _INTERP.findall(val.replace("%%(", "")):
                     _add_ref(out, x, module, el, file, "interpolation",
                              rmodel or record_model_of(el))
-        # %(x)d inside text (e.g. <field name="arch"> payloads rarely; action
-        # names in domain text bodies)
-        if tag == "field" and el.text and "%(" in el.text and len(el) == 0:
-            for x in _INTERP.findall(el.text):
-                _add_ref(out, x, module, el, file, "interpolation", record_model_of(el))
         if tag == "field" and el.text and "ref(" in el.text and len(el) == 0 \
                 and el.get("name") in ("domain", "domain_force", "context", "code"):
             for x in _REF_CALL.findall(el.text):
@@ -346,9 +373,27 @@ def _records_from_root(root: etree._Element, module: str, file: Path) -> list[Ra
     return out
 
 
+_XMLID_KEY = re.compile(r"""['"]xml_id['"]\s*:\s*['"]([\w.]+)['"]""")
+
+
+def _function_xmlids(root: etree._Element, module: str, file: Path) -> list[RawRecord]:
+    """ids created at load time by `<function model="ir.model.data"
+    name="_update_xmlids">` (`{'xml_id': 'stock.stock_location_stock', ...}`)
+    and similar functions taking explicit xml_id values."""
+    out: list[RawRecord] = []
+    for fn in root.iter("function"):
+        blob = " ".join(filter(None, [fn.get("eval") or ""] +
+                               [(v.get("eval") or "") + (v.text or "") for v in fn.iter("value")]))
+        for x in _XMLID_KEY.findall(blob):
+            out.append(RawRecord(tag="function-xmlid", module=module,
+                                 xmlid=_norm_ref(x, module), model=fn.get("model"),
+                                 location=_loc(fn, file)))
+    return out
+
+
 def _fill(result: RawXmlFile, root: etree._Element, module: str, file: Path) -> None:
     result.views = _views_from_root(root, module, file)
-    result.records = _records_from_root(root, module, file)
+    result.records = _records_from_root(root, module, file) + _function_xmlids(root, module, file)
     result.xmlid_refs = _refs_from_root(root, module, file)
 
 

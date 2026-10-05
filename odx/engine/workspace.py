@@ -29,6 +29,9 @@ from odx.engine.parser.csv import parse_csv
 from odx.engine.parser.python import parse_python
 from odx.engine.parser.xml import parse_xml
 
+# Odoo's server-wide modules: always installed, every module may rely on them.
+SERVER_WIDE_MODULES = ("base", "web")
+
 SKIP_DIRS = {"tests", "migrations", "upgrades", "static", "__pycache__", "node_modules"}
 DATA_KEYS = ("data", "demo", "init_xml", "update_xml", "demo_xml", "qweb")
 
@@ -166,7 +169,7 @@ class Workspace:
         """`module` plus everything it transitively depends on (incl. modules
         missing from the graph — callers check `graph.manifests` for those)."""
         seen: set[str] = set()
-        stack = [module]
+        stack = [module] + [m for m in SERVER_WIDE_MODULES if m in self.graph.manifests]
         while stack:
             m = stack.pop()
             if m in seen:

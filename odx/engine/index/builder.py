@@ -32,12 +32,13 @@ from odx.engine.contracts import Location, Resolution
 from odx.engine.index import IndexEntry, RefKind, SemanticIndex, XmlIdDef
 from odx.engine.index import exprs as X
 from odx.engine.index.catalog import (
+    MAGIC_FIELDS,
     VIRTUAL_WRITE_FIELDS,
     ModelCatalog,
     field_xmlid_name,
     model_xmlid_name,
 )
-from odx.engine.model.arch import EffectiveView, node_origin
+from odx.engine.model.arch import EffectiveView, name_origin, node_origin
 from odx.engine.model.raw import RawRecord, RawView, XmlIdRef
 from odx.engine.workspace import Workspace
 
@@ -115,6 +116,8 @@ class IndexBuilder:
             return Resolution.DYNAMIC
         if model in self.cat.models:
             return Resolution.STATIC
+        if model.startswith("ir."):
+            return Resolution.DYNAMIC      # framework registry models live in odoo/base
         if (declarative and module and module not in self.dynamic_modules
                 and self.ws.closure_is_complete(module)):
             return Resolution.UNRESOLVED
@@ -197,6 +200,10 @@ class IndexBuilder:
                     if p != M:
                         self.add_model_ref(RefKind.INHERIT, p, rm.location, module,
                                            f"{M} _inherit {p}", M)
+                    elif not rm.is_definition:
+                        # in-place extension: shows up in `why`/`impact` of M
+                        self.add_model_ref(RefKind.INHERIT, M, rm.location, module,
+                                           f"{M} extended in {module}", M)
                 for p, fname in rm.inherits.items():
                     self.add_model_ref(RefKind.DELEGATE, p, rm.location, module,
                                        f"{M} _inherits {p} via {fname}", M)
@@ -294,7 +301,18 @@ class IndexBuilder:
             if ev.arch is not None and model:
                 for origin in ev.contributors:
                     walked.add(origin)
-                self._walk_arch(ev.arch, model, xid)
+                # a derived primary (mode=primary + inherit_id) copies its parent
+                # tree: nodes from the parent are re-evaluated on THIS view's model
+                # and belong to the module declaring the derived view
+                own: set[str] | None = None
+                if rv is not None and rv.inherit_ref and rv.mode == "primary":
+                    parent_contribs: set[str] = set()
+                    for c in ev.contributors:
+                        if c == xid:
+                            break
+                        parent_contribs.add(c)
+                    own = set(ev.contributors) - parent_contribs
+                self._walk_arch(ev.arch, model, xid, own=own)
         # extension views not covered by any effective tree (base outside the
         # corpus / dynamic): index their raw payload against their own model.
         for v in self.raw_view_list:
@@ -315,14 +333,28 @@ class IndexBuilder:
             cur = self.raw_views.get(cur.inherit_ref) if cur.inherit_ref else None
         return None
 
-    def _origin(self, el, fallback_view: str) -> tuple[Location | None, str | None, str]:
-        vx, line = node_origin(el)
+    def _origin(self, el, fallback_view: str, attr: str | None = None
+                ) -> tuple[Location | None, str | None, str]:
+        vx, line = node_origin(el, attr)
         vx = vx or fallback_view
         rv = self.raw_views.get(vx)
         file = rv.location.file if rv and rv.location else None
-        return _loc(file, line or (el.sourceline or 0)), (rv.module if rv else None), vx
+        module = rv.module if rv else None
+        # a node copied from the parent tree into a derived primary exists only
+        # when both modules are installed: it belongs to whichever of the two
+        # depends on the other (the later-loaded one)
+        own, root_view = getattr(self, "_walk_ctx", (None, None))
+        if (own is not None and vx not in own and root_view is not None and module
+                and module != root_view.module
+                and module in self.ws.dependency_closure(root_view.module)):
+            return root_view.location, root_view.module, root_view.xmlid
+        return _loc(file, line or (el.sourceline or 0)), module, vx
 
-    def _walk_arch(self, arch, model: str, view_xmlid: str, approximate: bool = False) -> None:
+    def _walk_arch(self, arch, model: str, view_xmlid: str, approximate: bool = False,
+                   own: set[str] | None = None) -> None:
+        root_view = self.raw_views.get(view_xmlid)
+        self._walk_ctx = (own, root_view)
+
         def visit(el, M: str | None, in_qweb: bool) -> None:
             tag = el.tag
             if not isinstance(tag, str):
@@ -340,11 +372,13 @@ class IndexBuilder:
                     comodel = None if any(c.tag in VIEW_TAGS for c in el) else comodel
                 dom = el.get("domain")
                 if dom and comodel:
-                    self.add_domain(RefKind.VIEW_DOMAIN, comodel, dom, loc, module, detail, vx,
+                    dl, dm, dv = self._origin(el, vx, "domain")
+                    self.add_domain(RefKind.VIEW_DOMAIN, comodel, dom, dl, dm, f"view {dv}", dv,
                                     value_model=M, value_kind=RefKind.VIEW_DOMAIN)
                 fdom = el.get("filter_domain")
                 if fdom:
-                    self.add_domain(RefKind.SEARCH_FILTER, M, fdom, loc, module, detail, vx,
+                    dl, dm, dv = self._origin(el, vx, "filter_domain")
+                    self.add_domain(RefKind.SEARCH_FILTER, M, fdom, dl, dm, f"view {dv}", dv,
                                     value_model=None)
                 field_comodel = comodel
             elif M and tag == "groupby" and el.get("name"):
@@ -363,10 +397,13 @@ class IndexBuilder:
                                     detail, vx)
                 if tag == "filter":
                     if el.get("domain"):
-                        self.add_domain(RefKind.SEARCH_FILTER, M, el.get("domain"), loc,
-                                        module, detail, vx)
-                    for g in X.context_group_by(el.get("context")):
-                        self.add_path(RefKind.SEARCH_FILTER, M, g, loc, module, detail, vx)
+                        dl, dm, dv = self._origin(el, vx, "domain")
+                        self.add_domain(RefKind.SEARCH_FILTER, M, el.get("domain"), dl,
+                                        dm, f"view {dv}", dv)
+                    if el.get("context"):
+                        dl, dm, dv = self._origin(el, vx, "context")
+                        for g in X.context_group_by(el.get("context")):
+                            self.add_path(RefKind.SEARCH_FILTER, M, g, dl, dm, f"view {dv}", dv)
             if tag == "groupby":
                 for c in el:
                     visit(c, field_comodel, in_qweb)
@@ -385,17 +422,27 @@ class IndexBuilder:
         for attr in MODIFIER_ATTRS:
             v = el.get(attr)
             if v:
+                aloc, amodule, avx = self._origin(el, vx, attr)
                 names, parsed = X.modifier_names(v)
                 for n in names:
-                    self.add_path(RefKind.VIEW_MODIFIER, M, n, loc, module,
-                                  f"{detail} ({attr})", vx)
+                    nloc, nmodule, nvx = aloc, amodule, avx
+                    tsrc = name_origin(el, attr, n)
+                    if tsrc and tsrc in self.raw_views:
+                        rv = self.raw_views[tsrc]
+                        nloc, nmodule, nvx = rv.location, rv.module, tsrc
+                    self.add_path(RefKind.VIEW_MODIFIER, M, n, nloc, nmodule,
+                                  f"view {nvx} ({attr})", nvx)
         for attr, v in el.attrib.items():
             if isinstance(attr, str) and attr.startswith("decoration-") and v:
+                loc, module, vx = self._origin(el, vx, attr)
+                detail = f"view {vx}"
                 names, _ = X.modifier_names(v)
                 for n in names:
                     self.add_path(RefKind.VIEW_MODIFIER, M, n, loc, module,
                                   f"{detail} ({attr})", vx)
         if el.get("attrs"):
+            loc, module, vx = self._origin(el, vx, "attrs")
+            detail = f"view {vx}"
             d = X.attrs_refs(el.get("attrs"))
             for p in d.paths:
                 self.add_path(RefKind.VIEW_MODIFIER, M, p, loc, module, f"{detail} (attrs)", vx)
@@ -735,6 +782,17 @@ class IndexBuilder:
                         self.add_path(RefKind.DATA_RECORD, c.model, name, header_loc, c.module,
                                       f"CSV {c.file.name}", None)
 
+    @staticmethod
+    def _is_template_ref(xfile, ref) -> bool:
+        """Whether a t-call ref sits inside a `<template>` (server QWeb)."""
+        line = ref.location.start_line if ref.location else 0
+        for v in xfile.views:
+            if v.is_template and v.arch is not None:
+                lines = [e.sourceline or 0 for e in v.arch.iter() if isinstance(e.tag, str)]
+                if lines and min(lines) <= line <= max(lines):
+                    return True
+        return False
+
     # ------------------------------------------------------------------ #
     # XML-ID graph
     # ------------------------------------------------------------------ #
@@ -744,16 +802,42 @@ class IndexBuilder:
             for r in x.records:
                 if r.xmlid:
                     g.define(XmlIdDef(r.xmlid, r.module, r.model, r.location, r.tag))
-            g.refs.extend(x.xmlid_refs)
+                    # a record of a model with `_inherits` also gets an id for each
+                    # delegated parent record: `<id>_<parent_model_underscored>`
+                    m = self.cat.get(r.model)
+                    if m is not None and r.tag == "record":
+                        for parent in m.delegates:
+                            g.define(XmlIdDef(f"{r.xmlid}_{parent.replace('.', '_')}",
+                                              r.module, parent, r.location, "implicit-inherits"))
+            # t-call inside a non-template view arch targets client-side (OWL /
+            # kanban-local) templates, not external ids
+            g.refs.extend(ref for ref in x.xmlid_refs
+                          if not (ref.context == "t-call" and ref.record_model == "ir.ui.view"
+                                  and not self._is_template_ref(x, ref)))
         for c in self.ws.raw_csv():
             for xid, loc in c.xmlids:
                 g.define(XmlIdDef(xid, c.module, c.model, loc, "csv"))
             g.refs.extend(c.xmlid_refs)
         # implicit ids: ir.model / ir.model.fields / ir.module.module
+        # Odoo reflects `<module>.model_<x>` for EVERY module contributing a
+        # class to the model, and `<module>.field_<x>__<f>` for every module
+        # declaring (or overriding) the field.
+        for rmod in self.ws.raw_python():
+            for rm in rmod.models:
+                name = rm.effective_name
+                if not name:
+                    continue
+                g.define(XmlIdDef(f"{rmod.module}.{model_xmlid_name(name)}", rmod.module,
+                                  "ir.model", rm.location, "implicit-model"))
+                for rf in rm.fields:
+                    g.define(XmlIdDef(f"{rmod.module}.{field_xmlid_name(name, rf.name)}",
+                                      rmod.module, "ir.model.fields", rf.location,
+                                      "implicit-field"))
         for name, m in self.cat.models.items():
             if m.defined_in:
-                g.define(XmlIdDef(f"{m.defined_in}.{model_xmlid_name(name)}", m.defined_in,
-                                  "ir.model", m.location, "implicit-model"))
+                for magic in MAGIC_FIELDS:
+                    g.define(XmlIdDef(f"{m.defined_in}.{field_xmlid_name(name, magic)}",
+                                      m.defined_in, "ir.model.fields", None, "implicit-field"))
             for fname, rf in m.fields.items():
                 mod = rf.info.defined_in
                 if mod:

@@ -137,6 +137,17 @@ def resolve_interpolation(expr: str, xmlid_to_id) -> str:
     )
 
 
+def normalize_interpolation(text: str, module: str) -> str:
+    """Canonicalize `%(id)d` -> `%(module.id)d` (Odoo resolves both spellings to
+    the same record id). Applied to arch attribute values AND locator exprs, the
+    same xml-id becomes the same literal on both sides — so a locator matches
+    exactly when Odoo's id substitution would make it match, with no id table."""
+    return _INTERP.sub(
+        lambda m: m.group(0) if "." in m.group("xmlid")
+        else m.group(0).replace(f"%({m.group('xmlid')})", f"%({module}.{m.group('xmlid')})"),
+        text)
+
+
 def has_interpolation(expr: str | None) -> bool:
     """Whether an expr carries a `%(xmlid)d/s` reference (must be resolved before
     evaluation; view backlog item 3)."""
@@ -151,6 +162,9 @@ def unsupported_functions(expr: str | None) -> list[str]:
     non-empty result means: do not trust a no-match as 'target missing' — this is
     an engine limitation to surface (-> Resolution.DYNAMIC), not the user's bug.
     """
-    used = set(_FN_CALL.findall(expr or ""))
+    # function names only — never text inside string literals (a shorthand
+    # locator carries attribute values like [@t-if='len(lines)'])
+    bare = re.sub(r"'[^']*'|\"[^\"]*\"", "''", expr or "")
+    used = set(_FN_CALL.findall(bare))
     known = XPATH_1_0_FUNCTIONS | set(implemented_functions())
     return sorted(n for n in used if n not in known)

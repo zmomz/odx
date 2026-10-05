@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_book_form" model="ir.ui.view">
+        <field name="name">library.book.form</field>
+        <field name="model">library.book</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_done" type="object" string="Done" invisible="state == 'done'"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group name="main">
+                        <field name="title"/>
+                        <field name="author_id" domain="[('partner_id.country_id', '!=', False)]"/>
+                        <field name="author_country_id"/>
+                        <field name="price"/>
+                        <field name="currency_id" invisible="1"/>
+                        <field name="company_id"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_book_tree" model="ir.ui.view">
+        <field name="name">library.book.tree</field>
+        <field name="model">library.book</field>
+        <field name="arch" type="xml">
+            <tree decoration-muted="state == 'done'">
+                <field name="title"/>
+                <field name="author_id"/>
+                <field name="state"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_author_form" model="ir.ui.view">
+        <field name="name">library.author.form</field>
+        <field name="model">library.author</field>
+        <field name="arch" type="xml">
+            <form>
+                <field name="name"/>
+                <field name="book_ids">
+                    <tree>
+                        <field name="title"/>
+                        <field name="state"/>
+                    </tree>
+                </field>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_book_search" model="ir.ui.view">
+        <field name="name">library.book.search</field>
+        <field name="model">library.book</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="title"/>
+                <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+                <filter name="by_author" string="Author" context="{'group_by': 'author_id'}"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_book" model="ir.actions.act_window">
+        <field name="name">Books</field>
+        <field name="res_model">library.book</field>
+        <field name="view_mode">tree,form</field>
+        <field name="domain">[('state', '!=', 'cancel')]</field>
+    </record>
+
+    <menuitem id="menu_library_root" name="Library"/>
+    <menuitem id="menu_book" name="Books" parent="menu_library_root" action="action_book"/>
+</odoo>

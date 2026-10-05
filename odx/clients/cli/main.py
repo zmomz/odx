@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from odx.clients.cli import config as cfgmod
+from odx.clients.cli import analysis_cmds as an
 from odx.clients.cli import runtime_cmds as rt
 from odx.clients.cli import scaffold_cmds as sc
 from odx.runtime import commands as rcmd
@@ -48,22 +49,6 @@ app = typer.Typer(
     add_completion=True,            # shell completion (§14 UX requirement)
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-
-
-# --------------------------------------------------------------------------- #
-# stub helper — Phase 0 commands announce their backing phase instead of crashing
-# --------------------------------------------------------------------------- #
-def _stub(what: str, phase: str, writes: bool = False) -> None:
-    tag = "[yellow]mutating[/yellow]" if writes else "[green]read-only[/green]"
-    console.print(
-        Panel(
-            f"[bold]{what}[/bold]  ({tag})\n\n"
-            f"[dim]Not implemented yet — lands in {phase}.[/dim]\n"
-            f"This is a Phase 0 skeleton: the grammar is real, the body is a stub.",
-            title="odx",
-            border_style="cyan",
-        )
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -213,47 +198,120 @@ def test(
 # ===========================================================================
 # analysis (engine, read-only) — Phases 3–4
 # ===========================================================================
+_PATH = typer.Option(None, "--path", "-p", help="Project root (default: the .odx.toml dir or cwd).")
+_FORMAT = typer.Option("text", "--format", "-f", help="text | json | github | sarif")
+
+
 @app.command()
 def check(
     only: str = typer.Option(None, "--only", help="Comma list, e.g. views,access,security."),
+    module: str = typer.Option(None, "--module", "-m", help="Comma list of modules to check."),
+    all_modules: bool = typer.Option(False, "--all", help="Also check context modules (odoo/OCA deps)."),
+    fmt: str = _FORMAT,
+    fail_on: str = typer.Option("error", "--fail-on", help="error | warning | info | never (exit 1 at/above)."),
+    path: Path = _PATH,
 ) -> None:
-    """Fast static analysis; report only. [green](read-only)[/green]"""
-    _stub("check", "Phase 4 (analyzers)")
+    """Fast static analysis; report only. [green](read-only)[/green]
+
+    Examples:  odx check · odx check --only views,access · odx check -f github
+    """
+    an.run_check(path, only, module, all_modules, fmt, fail_on)
 
 
 @app.command()
 def report(
-    with_runtime: bool = typer.Option(False, "--with-runtime", help="Include runtime probe."),
+    with_runtime: bool = typer.Option(False, "--with-runtime", help="Include a fresh-install runtime probe."),
+    module: str = typer.Option(None, "--module", "-m", help="Comma list of modules to score."),
+    fmt: str = typer.Option("text", "--format", "-f", help="text | json"),
+    path: Path = _PATH,
 ) -> None:
     """Scored aggregate health report (§15). [green](read-only)[/green]"""
-    _stub("report", "Phase 4 (analyzers)")
+    eng = an.engine(path)
+    sc = an.scope(eng, module, False)
+    probe = None
+    if with_runtime:
+        from odx.runtime.probe import install_probe
+        settings = rt.load_settings()
+        mods = list(sc.modules) or eng.modules(project_only=True)
+        with an.err_console.status("[dim]installing into a throwaway database…[/dim]"):
+            probe = install_probe(settings, mods)
+    an.render_report(eng.report(sc, with_runtime=with_runtime, probe=probe), fmt,
+                     an.project_root(path))
 
 
 @app.command()
-def fix(target: str = typer.Argument(None, help="What to fix, e.g. access.")) -> None:
-    """Apply safe changes. [yellow](mutating)[/yellow]"""
-    _stub("fix", "Phase 4 (analyzers)", writes=True)
+def fix(
+    target: str = typer.Argument(None, help="What to fix, e.g. access, module, xmlid (default: all)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the plan; write nothing."),
+    module: str = typer.Option(None, "--module", "-m", help="Comma list of modules."),
+    path: Path = _PATH,
+) -> None:
+    """Apply safe changes. [yellow](mutating)[/yellow]
+
+    Shows the plan (files + diff) before writing (rule 5).
+    """
+    eng = an.engine(path)
+    plan = eng.fix(an.scope(eng, module, False), [target] if target else None)
+    sc.emit(plan, dry_run)
 
 
 @app.command()
-def why(target: str = typer.Argument(..., help="A field (model.field) or model.")) -> None:
+def why(
+    target: str = typer.Argument(..., help="A field (model.field) or model."),
+    fmt: str = typer.Option("text", "--format", "-f", help="text | json"),
+    path: Path = _PATH,
+) -> None:
     """Where is this used? (terse). [green](read-only)[/green]"""
-    _stub(f"why {target}", "Phase 3/6 (index + polish)")
+    eng = an.engine(path)
+    an.render_usage(eng.usage(target), False, fmt, an.project_root(path))
 
 
 @app.command()
-def impact(target: str = typer.Argument(..., help="A field (model.field) or model.")) -> None:
+def impact(
+    target: str = typer.Argument(..., help="A field (model.field) or model."),
+    fmt: str = typer.Option("text", "--format", "-f", help="text | json"),
+    path: Path = _PATH,
+) -> None:
     """Where is this used? (detailed report). [green](read-only)[/green]"""
-    _stub(f"impact {target}", "Phase 3/6 (index + polish)")
+    eng = an.engine(path)
+    an.render_usage(eng.usage(target), True, fmt, an.project_root(path))
 
 
 # ===========================================================================
 # runtime-composed (engine + runtime) — Phase 6
 # ===========================================================================
 @app.command()
-def doctor() -> None:
-    """Runtime fresh-install probe (§15). [green](read-only)[/green]"""
-    _stub("doctor", "Phase 6 (runtime introspection)")
+def doctor(
+    module: str = typer.Option(None, "--module", "-m", help="Comma list (default: project modules)."),
+    keep_db: bool = typer.Option(False, "--keep-db", help="Keep the throwaway database."),
+    demo: bool = typer.Option(False, "--demo", help="Install with demo data."),
+    log_file: Path = typer.Option(None, "--log", help="Analyze an existing install log instead."),
+    fmt: str = _FORMAT,
+    path: Path = _PATH,
+) -> None:
+    """Runtime fresh-install probe (§15). [green](read-only)[/green]
+
+    Creates a throwaway database, installs the modules, maps what breaks back to
+    source locations, and drops the database.
+    """
+    from odx.engine.contracts import InstallProbe
+    eng = an.engine(path)
+    mods = [m.strip() for m in (module or "").split(",") if m.strip()] or eng.modules(project_only=True)
+    if log_file is not None:
+        probe = InstallProbe(database="(log)", modules=tuple(mods), returncode=0,
+                             log=log_file.read_text(encoding="utf-8", errors="replace"))
+    else:
+        from odx.runtime.probe import install_probe
+        settings = rt.load_settings()
+        with an.err_console.status("[dim]installing into a throwaway database…[/dim]"):
+            probe = install_probe(settings, mods, keep_db=keep_db, demo=demo)
+    rep = eng.doctor(probe)
+    if fmt == "text":
+        st = "[green]✓ clean install[/green]" if rep.ok else "[red]✗ install has problems[/red]"
+        console.print(f"{st}  ({', '.join(rep.modules)} on {rep.database})")
+    an.render_diagnostics(rep.diagnostics, fmt, an.project_root(path))
+    if not rep.ok:
+        raise typer.Exit(1)
 
 
 # ===========================================================================
@@ -568,21 +626,62 @@ def db_anonymize(name: str, yes: bool = typer.Option(False, "--yes", "-y", help=
 
 
 @diff_app.command("db")
-def diff_db() -> None:
+def diff_db(
+    snapshot: Path = typer.Option(None, "--snapshot", help="Compare against a saved snapshot JSON."),
+    save: Path = typer.Option(None, "--save", help="Also save the live snapshot to this file."),
+    url: str = typer.Option(None, "--url", help="Odoo URL (default http://localhost:<http_port>)."),
+    db: str = typer.Option(None, "--db", help="Database (default: config [database].default)."),
+    user: str = typer.Option("admin", "--user", help="Login for XML-RPC."),
+    password: str = typer.Option("admin", "--password", help="Password / API key.", envvar="ODX_PASSWORD"),
+    fmt: str = _FORMAT,
+    path: Path = _PATH,
+) -> None:
     """Diff code against a live DB. [green](read-only)[/green]"""
-    _stub("diff db", "Phase 6 (runtime introspection)")
+    from odx.runtime import rpc
+    eng = an.engine(path)
+    if snapshot is not None:
+        snap = rpc.snapshot_from_json(snapshot)
+    else:
+        settings = rt.load_settings()
+        try:
+            client = rpc.OdooRpc.from_settings(settings, user=user, password=password,
+                                               url=url, db=db)
+            snap = client.snapshot()
+        except (rpc.RpcError, OSError) as e:
+            err_console.print(f"[red]error:[/red] cannot read the database: {e}\n"
+                              "Is Odoo running (`odx run`)? Or pass --snapshot file.json.")
+            raise typer.Exit(2)
+        if save is not None:
+            rpc.snapshot_to_json(snap, save)
+    diags = eng.diff_against_db(snap)
+    an.render_diagnostics(diags, fmt, an.project_root(path))
+    an.exit_for(diags, "warning")
 
 
 @upgrade_app.command("check")
-def upgrade_check(to: str = typer.Option(..., "--to", help="Target version.")) -> None:
+def upgrade_check(
+    to: str = typer.Option(..., "--to", help="Target version, e.g. 18.0."),
+    fmt: str = _FORMAT,
+    path: Path = _PATH,
+) -> None:
     """Check migration readiness. [green](read-only)[/green]"""
-    _stub(f"upgrade check --to {to}", "Phase 7 (migration)")
+    eng = an.engine(path)
+    rep = eng.upgrade_check(to)
+    if fmt == "text":
+        console.print(f"[bold]upgrade {rep.source} → {rep.target}[/bold]: "
+                      f"{len(rep.diagnostics)} finding(s)")
+    an.render_diagnostics(rep.diagnostics, fmt, an.project_root(path))
 
 
 @upgrade_app.command("apply")
-def upgrade_apply(to: str = typer.Option(..., "--to", help="Target version.")) -> None:
+def upgrade_apply(
+    to: str = typer.Option(..., "--to", help="Target version, e.g. 18.0."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the plan; write nothing."),
+    path: Path = _PATH,
+) -> None:
     """Apply migration edits. [yellow](mutating)[/yellow]"""
-    _stub(f"upgrade apply --to {to}", "Phase 7 (migration)", writes=True)
+    eng = an.engine(path)
+    sc.emit(eng.upgrade_apply(to), dry_run)
 
 
 if __name__ == "__main__":

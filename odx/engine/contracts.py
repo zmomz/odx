@@ -347,3 +347,21 @@ class UpgradeReport:
     target: str
     diagnostics: list[Diagnostic] = dc_field(default_factory=list)
     stats: dict[str, int] = dc_field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# Where-used (`why` / `impact`, RFC §7/§14) — one index query; clients choose
+# the verbosity (terse counts vs the detailed reference list).
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class UsageReport:
+    target: str
+    model: str | None
+    field: str | None = None
+    known: bool = False                  # target resolved to a model/field we know
+    resolution: Resolution = Resolution.STATIC
+    definition: Location | None = None   # where the model/field is declared
+    defined_in: list[str] = dc_field(default_factory=list)   # contributing modules
+    by_kind: dict[str, int] = dc_field(default_factory=dict)
+    references: list[Reference] = dc_field(default_factory=list)
+    message: str = ""                    # why it isn't known, what to do next

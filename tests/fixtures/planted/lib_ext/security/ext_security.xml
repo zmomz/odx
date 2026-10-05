@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="rule_book_owner" model="ir.rule">
+        <field name="name">Book: owner</field>
+        <field name="model_id" ref="lib_core.model_library_book"/>
+        <field name="domain_force">[('owner_id', '=', user.id)]</field>
+    </record>
+</odoo>

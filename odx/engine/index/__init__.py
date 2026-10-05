@@ -82,6 +82,10 @@ class IndexEntry:
     path: str | None = None                 # full path as written, when from a path
     note: str = ""                          # why non-STATIC
 
+    def __post_init__(self) -> None:
+        if isinstance(self.kind, Enum):         # store the stable string value
+            object.__setattr__(self, "kind", self.kind.value)
+
     def to_reference(self) -> Reference:
         loc = self.location or Location(Path("<unknown>"), 0, 0, 0, 0)
         return Reference(kind=self.kind, location=loc, detail=self.detail,
