@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>odx model browser</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg:#fbfbfa; --panel:#ffffff; --fg:#1d1f21; --muted:#6b7075; --line:#e4e4e1;
+          --accent:#2f6fde; --ok:#2e7d4f; --warn:#a86b00; --err:#c0392b; --dyn:#7a5bc7; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181b; --panel:#1d2024; --fg:#e6e6e3; --muted:#9aa0a6; --line:#2c3036;
+            --accent:#6ea2ff; --ok:#5cc28a; --warn:#e2a23b; --err:#ff7b6b; --dyn:#b39cf0; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:16px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header b { font-size:15px; }
+  nav button { background:none; border:0; color:var(--muted); padding:6px 10px; cursor:pointer; font:inherit; border-radius:6px; }
+  nav button.on { color:var(--fg); background:var(--bg); }
+  main { display:grid; grid-template-columns:280px 1fr; height:calc(100vh - 49px); }
+  aside { border-right:1px solid var(--line); overflow:auto; background:var(--panel); }
+  aside input { width:calc(100% - 20px); margin:10px; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
+  aside li { list-style:none; padding:4px 14px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  aside li:hover, aside li.on { background:var(--bg); }
+  aside ul { margin:0; padding:0 0 12px; }
+  section { overflow:auto; padding:18px 24px; }
+  h2 { margin:0 0 4px; font-size:18px; } .sub { color:var(--muted); margin-bottom:14px; }
+  table { border-collapse:collapse; width:100%; } td, th { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; } tr.f { cursor:pointer; } tr.f:hover { background:var(--panel); }
+  .badge { font-size:11px; padding:1px 6px; border-radius:9px; border:1px solid currentColor; }
+  .static { color:var(--ok); } .dynamic { color:var(--dyn); } .partial { color:var(--warn); } .unresolved { color:var(--err); }
+  .error { color:var(--err); } .warning { color:var(--warn); } .info, .hint { color:var(--muted); }
+  .grid2 { display:grid; grid-template-columns: minmax(0,1.3fr) minmax(0,1fr); gap:24px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:16px; }
+  code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
+  pre { white-space:pre-wrap; margin:0; }
+  svg text { fill:var(--fg); font-size:11px; } svg line { stroke:var(--line); stroke-width:1.5; }
+  .muted { color:var(--muted); } a { color:var(--accent); cursor:pointer; text-decoration:none; }
+  @media (max-width:800px) { main { grid-template-columns:1fr; } aside { max-height:35vh; } .grid2 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header><b>odx</b><nav>
+  <button data-tab="models" class="on">Models</button>
+  <button data-tab="check">Check</button>
+  <button data-tab="report">Report</button>
+  <button data-tab="fix">Fix preview</button>
+</nav><span id="status" class="muted"></span></header>
+<main>
+  <aside><input id="q" placeholder="filter models…" autocomplete="off"><ul id="list"></ul></aside>
+  <section id="view"><p class="muted">Pick a model.</p></section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const api = p => fetch(p).then(r => r.json());
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let models = [], current = null;
+
+async function loadModels() {
+  models = await api("/api/models");
+  $("#status").textContent = models.length + " models";
+  renderList();
+}
+function renderList() {
+  const q = $("#q").value.trim();
+  $("#list").innerHTML = models.filter(m => !q || m.name.includes(q)).slice(0, 800)
+    .map(m => `<li data-m="${esc(m.name)}" class="${m.name === current ? "on" : ""}">${esc(m.name)}</li>`).join("");
+}
+$("#q").addEventListener("input", renderList);
+$("#list").addEventListener("click", e => { const m = e.target.dataset.m; if (m) showModel(m); });
+
+function badge(r) { return `<span class="badge ${esc(r)}">${esc(r)}</span>`; }
+
+async function showModel(name) {
+  current = name; renderList(); tab("models", false);
+  const [m, g, u] = await Promise.all([api("/api/model/" + encodeURIComponent(name)),
+    api("/api/graph?model=" + encodeURIComponent(name)), api("/api/usage?target=" + encodeURIComponent(name))]);
+  const rows = m.fields.map(f => `<tr class="f" data-f="${esc(f.name)}"><td><code>${esc(f.name)}</code></td>
+    <td>${esc(f.type)}${f.attributes.comodel ? ` → <a data-goto="${esc(f.attributes.comodel)}">${esc(f.attributes.comodel)}</a>` : ""}</td>
+    <td class="muted">${esc(f.defined_in)}</td><td>${badge(f.resolution)}</td></tr>`).join("");
+  $("#view").innerHTML = `<h2>${esc(m.name)}</h2>
+    <div class="sub">${esc(m.kind)} · defined in <b>${esc(m.defined_in || "outside the indexed addons")}</b>
+      · ${m.fields.length} fields · ${m.complete ? "fully visible" : "partially visible"} ${badge(m.resolution)}
+      ${m.inherit_chain.length ? `<br>_inherit: ${m.inherit_chain.map(p => `<a data-goto="${esc(p)}">${esc(p)}</a>`).join(", ")}` : ""}
+      ${m.delegates.length ? `<br>_inherits: ${m.delegates.map(p => `<a data-goto="${esc(p)}">${esc(p)}</a>`).join(", ")}` : ""}</div>
+    <div class="grid2"><div class="card"><table><tr><th>field</th><th>type</th><th>defined in</th><th></th></tr>${rows}</table></div>
+    <div><div class="card"><b>neighbourhood</b>${svg(g)}</div><div class="card" id="usage">${usage(u)}</div></div></div>`;
+}
+function usage(u) {
+  if (!u.known) return `<span class="muted">${esc(u.message || "unknown")}</span>`;
+  const kinds = Object.entries(u.by_kind).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${esc(k)}`).join(" · ");
+  const refs = u.references.slice(0, 300).map(r => `<div><code>${esc(r.location.file)}:${r.location.start_line}</code>
+    <span class="muted">${esc(r.kind)} · ${esc(r.detail)}</span> ${r.resolution !== "static" ? badge(r.resolution) : ""}</div>`).join("");
+  return `<b>where used: ${esc(u.field ? u.model + "." + u.field : u.model)}</b><div class="muted">${kinds || "no references"}</div>
+    <div style="margin-top:8px;max-height:46vh;overflow:auto">${refs}</div>`;
+}
+function svg(g) {
+  const W = 420, H = 300, cx = W / 2, cy = H / 2, others = g.nodes.filter(n => n.kind !== "center");
+  const pos = {}; g.nodes.forEach(n => { if (n.kind === "center") pos[n.id] = [cx, cy]; });
+  others.forEach((n, i) => { const a = 2 * Math.PI * i / Math.max(others.length, 1);
+    pos[n.id] = [cx + Math.cos(a) * 125, cy + Math.sin(a) * 110]; });
+  const col = {center:"var(--accent)", parent:"var(--ok)", child:"var(--warn)", delegate:"var(--dyn)", comodel:"var(--muted)"};
+  const lines = g.edges.map(e => pos[e.from] && pos[e.to] ? `<line x1="${pos[e.from][0]}" y1="${pos[e.from][1]}" x2="${pos[e.to][0]}" y2="${pos[e.to][1]}"/>` : "").join("");
+  const dots = g.nodes.map(n => `<g data-goto="${esc(n.id)}" style="cursor:pointer"><circle cx="${pos[n.id][0]}" cy="${pos[n.id][1]}" r="6" fill="${col[n.kind]}"/>
+    <text x="${pos[n.id][0] + 9}" y="${pos[n.id][1] + 4}">${esc(n.id)}</text></g>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%">${lines}${dots}</svg>
+    <div class="muted" style="font-size:12px"><span class="static">●</span> parent · <span class="partial">●</span> child · <span class="dynamic">●</span> delegate · ● comodel</div>`;
+}
+document.addEventListener("click", async e => {
+  const g = e.target.closest("[data-goto]"); if (g) { showModel(g.dataset.goto); return; }
+  const f = e.target.closest("tr[data-f]");
+  if (f && current) $("#usage").innerHTML = usage(await api("/api/usage?target=" + encodeURIComponent(current + "." + f.dataset.f)));
+});
+function diagRows(ds) {
+  if (!ds.length) return `<p class="static">✓ no findings</p>`;
+  return `<table><tr><th>where</th><th>severity</th><th>finding</th></tr>` + ds.map(d => `<tr>
+    <td><code>${esc(d.location ? d.location.file + ":" + d.location.start_line : "")}</code></td>
+    <td class="${esc(d.severity)}">${esc(d.severity)}</td><td>${esc(d.message)} <span class="muted">${esc(d.code)}</span></td></tr>`).join("") + "</table>";
+}
+async function tab(name, load = true) {
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  if (!load) return;
+  if (name === "models") { current ? showModel(current) : ($("#view").innerHTML = `<p class="muted">Pick a model.</p>`); return; }
+  $("#view").innerHTML = `<p class="muted">working…</p>`;
+  if (name === "check") $("#view").innerHTML = `<h2>check</h2><div class="card">${diagRows(await api("/api/check"))}</div>`;
+  if (name === "report") { const r = await api("/api/report");
+    $("#view").innerHTML = `<h2>report — ${esc(r.grade)} (${r.score}/100)</h2>
+      <div class="sub">${Object.entries(r.stats).map(([k, v]) => `${v} ${esc(k)}`).join(" · ")}</div>
+      <div class="card"><b>recommendations</b><ul>${r.recommendations.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>
+      <div class="card">${diagRows(r.diagnostics)}</div>`; }
+  if (name === "fix") { const p = await api("/api/fix");
+    $("#view").innerHTML = `<h2>fix preview</h2><div class="sub">${esc(p.summary)} — run <code>odx fix</code> to apply</div>
+      <div class="card"><pre>${esc(p.preview)}</pre></div>`; }
+}
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => tab(b.dataset.tab)));
+loadModels();
+</script>
+</body>
+</html>

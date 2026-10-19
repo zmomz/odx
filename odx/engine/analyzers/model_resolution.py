@@ -38,6 +38,19 @@ class ModelResolutionAnalyzer:
     """Reports fields the resolver marked UNRESOLVED for a defective reason."""
 
     code_prefix = "field"
+    categories = ("fields",)
+
+    def run(self, api, scope) -> list[Diagnostic]:
+        """RFC §9 contract: the SemanticAPI surface, narrowed to `scope`. A
+        field is in scope when the module that declares it is."""
+        out = []
+        for d in self.run_on_models(api.resolved_models()):
+            m = api.resolved_model(d.model) if d.model else None
+            rf = m.fields.get(d.field) if m and d.field else None
+            module = rf.provenance.module if rf else None
+            if api.in_scope(scope, module=module, location=d.location):
+                out.append(d)
+        return out
 
     def run_on_models(self, models: dict[str, ResolvedModel]) -> list[Diagnostic]:
         """Read-only over resolved models → Diagnostics (RFC §6, C2).

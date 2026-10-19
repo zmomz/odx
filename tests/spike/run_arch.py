@@ -87,14 +87,17 @@ def run_arch(corpus: Path) -> dict:
 
     # failures, classified by reason head and by declaring-view kind
     reasons: Counter = Counter()
-    rec_dangling = 0
+    rec_dangling = tpl_dangling = 0
     for ev in effective.values():
         for u in ev.unresolved_locators:
             head = u.reason.split(":", 1)[0]
             reasons[head] += 1
             decl = reg.get(u.view_xmlid or "")
-            if head == "target-not-found" and decl is not None and not decl.is_template:
-                rec_dangling += 1
+            if head == "target-not-found" and decl is not None:
+                if decl.is_template:
+                    tpl_dangling += 1
+                else:
+                    rec_dangling += 1
 
     rec_resolved = rec_locators - rec_dangling
     built = len(effective)
@@ -115,6 +118,9 @@ def run_arch(corpus: Path) -> dict:
         "record_resolved_pct": round(100.0 * rec_resolved / rec_locators, 2) if rec_locators else 100.0,
         "record_dangling_after_apply": rec_dangling,   # genuine UNRESOLVED (Phase-4)
         "template_locators": tpl_locators,
+        "template_resolved": tpl_locators - tpl_dangling,
+        "template_dangling_after_apply": tpl_dangling,
+        "inactive_view_misses": reasons.get("inactive-view", 0),
         "qweb_deferred": reasons.get("qweb-deferred", 0),
         "interpolation_deferred": reasons.get("interpolation-deferred", 0),
         "dialect_unsupported": reasons.get("dialect-unsupported", 0),
@@ -144,8 +150,10 @@ def main(argv: list[str]) -> int:
     print(f"  record resolved:         {r['record_resolved']}  ({r['record_resolved_pct']}%)")
     print(f"  dangling after apply:    {r['record_dangling_after_apply']}  (genuine UNRESOLVED -> Phase 4)")
     print(f"  template locators:       {r['template_locators']}")
-    print(f"  qweb-deferred:           {r['qweb_deferred']}  (view backlog item 4)")
-    print(f"  interpolation-deferred:  {r['interpolation_deferred']}  (DYNAMIC, view backlog item 3)")
+    print(f"  template dangling:       {r['template_dangling_after_apply']}  (genuine UNRESOLVED)")
+    print(f"  inactive-view misses:    {r['inactive_view_misses']}  (PARTIAL: optional views, not applied by default)")
+    print(f"  qweb-deferred:           {r['qweb_deferred']}  (view backlog item 4 — closed)")
+    print(f"  interpolation-deferred:  {r['interpolation_deferred']}  (view backlog item 3 — closed)")
     print(f"  dialect-unsupported:     {r['dialect_unsupported']}  (DYNAMIC, announced)")
     print(f"  base-outside-corpus:     {r['base_outside_corpus']}  (DYNAMIC, boundary)")
     return 0

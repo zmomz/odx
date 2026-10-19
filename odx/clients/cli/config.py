@@ -29,12 +29,17 @@ class ProjectConfig:
     database_default: str = "my_dev_db"
     database_host: str = "localhost"
     database_port: int = 5432
+    database_user: str = "odoo"
+    database_password: str = "odoo"
+    docker_compose_file: str = "docker-compose.yml"
+    docker_service: str = "odoo"
+    docker_db_service: str = "db"
     http_port: int = 8069
     logs_scope: str | None = None
 
 
 def find_config(start: Path) -> Path | None:
-    """Walk up from `start` looking for a .od.toml (like git finds .git)."""
+    """Walk up from `start` looking for a .odx.toml (like git finds .git)."""
     start = start.resolve()
     for parent in (start, *start.parents):
         candidate = parent / CONFIG_NAME
@@ -68,6 +73,13 @@ source_path = {source}
 default = "{cfg.database_default}"
 host = "{cfg.database_host}"
 port = {cfg.database_port}
+user = "{cfg.database_user}"
+password = "{cfg.database_password}"
+
+[docker]                          # used when runtime = "docker"
+compose_file = "{cfg.docker_compose_file}"
+service = "{cfg.docker_service}"
+db_service = "{cfg.docker_db_service}"
 
 [run]
 http_port = {cfg.http_port}
@@ -75,6 +87,9 @@ dev = "all"
 
 [logs]
 scope = {logs_scope}
+
+[engine]
+cache = true                     # durable parse cache (~/.cache/odx); speeds up re-runs
 """
 
 

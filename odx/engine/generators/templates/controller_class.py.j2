@@ -1,0 +1,6 @@
+class {{ cls }}(http.Controller):
+
+    @http.route({{ route|py }}, type='http', auth={{ auth|py }}, methods=['GET'])
+    def {{ method }}(self, **kwargs):
+        # `request` gives access to env, params, session, ...
+        return request.make_response({{ ('Hello from ' ~ route)|py }})

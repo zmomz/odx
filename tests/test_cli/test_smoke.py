@@ -23,10 +23,10 @@ def test_bare_command_shows_cheatsheet():
     assert "odx init" in result.output
 
 
-def test_stubbed_verb_does_not_crash():
-    result = runner.invoke(app, ["check"])
-    assert result.exit_code == 0
-    assert "Phase" in result.output
+def test_check_on_an_empty_project_is_clean(tmp_path):
+    result = runner.invoke(app, ["check", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "no findings" in result.output
 
 
 def test_all_verbs_have_help():

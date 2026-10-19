@@ -1,0 +1,7 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_res_partner,res.partner,model_res_partner,group_user,1,1,1,1
+access_res_country,res.country,model_res_country,group_user,1,0,0,0
+access_res_company,res.company,model_res_company,group_user,1,0,0,0
+access_res_currency,res.currency,model_res_currency,group_user,1,0,0,0
+access_res_users,res.users,model_res_users,group_user,1,0,0,0
+access_res_groups,res.groups,model_res_groups,group_user,1,0,0,0

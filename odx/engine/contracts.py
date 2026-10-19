@@ -118,6 +118,10 @@ class FieldInfo:
     attributes: dict[str, object] = dc_field(default_factory=dict)
     defined_in: str = ""            # provenance — powers `why` + invalidation
     location: Location | None = None
+    # folded in from the resolver when the Semantic API landed (RFC §10):
+    resolution: Resolution = Resolution.STATIC
+    notes: tuple[str, ...] = ()
+    via: str = "own"                # own | _inherit | _inherits | magic
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,26 @@ class ModelInfo:
     delegates: list[str] = dc_field(default_factory=list)
     fields: list[FieldInfo] = dc_field(default_factory=list)   # effective (own + inherited + delegated)
     location: Location | None = None
+    kind: str = "Model"             # Model | AbstractModel | TransientModel
+    defined_in: str | None = None   # module whose class declares `_name` (None: outside corpus)
+    modules: list[str] = dc_field(default_factory=list)   # every contributing module, load order
+    description: str | None = None
+    resolution: Resolution = Resolution.STATIC
+    complete: bool = False          # whole model visible (missing field => provable defect)
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ModelSummary:
+    """A model's identity without its fields (listing / completion)."""
+    name: str
+    kind: str = "Model"
+    defined_in: str | None = None
+    complete: bool = False
+    modules: list[str] = dc_field(default_factory=list)
+    resolution: Resolution = Resolution.STATIC
+    parents: list[str] = dc_field(default_factory=list)      # _inherit (prototype) parents
+    delegates: list[str] = dc_field(default_factory=list)    # _inherits targets
 
 
 @dataclass(frozen=True)
@@ -140,6 +164,10 @@ class Reference:
     kind: str                       # one of the RFC §7 reference kinds
     location: Location
     detail: str = ""
+    model: str | None = None        # the referenced model
+    field: str | None = None        # the referenced field (None: model-level ref)
+    module: str | None = None       # module whose source makes the reference
+    resolution: Resolution = Resolution.STATIC
 
 
 @dataclass(frozen=True)
@@ -151,3 +179,218 @@ class AccessRule:
     perm_create: bool
     perm_unlink: bool
     location: Location | None = None
+    xmlid: str | None = None          # the row's external id (module.id)
+    name: str | None = None
+    model_ref: str | None = None      # the model's external id as written (model_x)
+    module: str | None = None         # module declaring the row
+
+
+# --------------------------------------------------------------------------- #
+# Scope (C5/§8) — the unit analyzers accept. Empty tuples mean "no restriction";
+# a populated tuple narrows to those modules / models / files.
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Scope:
+    label: str = "all"
+    modules: tuple[str, ...] = ()
+    models: tuple[str, ...] = ()
+    files: tuple[Path, ...] = ()
+
+    @property
+    def is_all(self) -> bool:
+        return not (self.modules or self.models or self.files)
+
+    def includes_module(self, module: str | None) -> bool:
+        return not self.modules or module in self.modules
+
+    def includes_model(self, model: str | None) -> bool:
+        return not self.models or model in self.models
+
+    def includes_location(self, loc: "Location | None") -> bool:
+        if not self.files:
+            return True
+        if loc is None:
+            return False
+        f = Path(loc.file).resolve()
+        return any(f == Path(p).resolve() or Path(p).resolve() in f.parents
+                   for p in self.files)
+
+
+# --------------------------------------------------------------------------- #
+# Generator specs (Phase 2, RFC §11/§16) — what a client gathers (flags, prompts,
+# name-based guesses) and hands to a generator. The engine never assumes a type;
+# a FieldSpec carries only that type's legal follow-ups (§16 matrix).
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class FieldSpec:
+    model: str
+    name: str
+    type: str                                  # odoo field class name, e.g. "Many2one"
+    module: str | None = None                  # module that gets the edit (None: infer)
+    string: str | None = None
+    comodel: str | None = None                 # relational
+    inverse_name: str | None = None            # one2many
+    relation: str | None = None                # many2many table
+    required: bool = False
+    default: str | None = None                 # python literal source text
+    help: str | None = None
+    options: tuple[tuple[str, str], ...] = ()  # selection (key, label)
+    currency_field: str | None = None          # monetary
+    digits: str | None = None                  # float/monetary
+    compute: str | None = None                 # compute method name
+    depends: tuple[str, ...] = ()              # @api.depends paths for a compute
+    store: bool = False
+    ondelete: str | None = None                # many2one
+    translate: bool = False
+    size: int | None = None                    # char
+
+
+@dataclass(frozen=True)
+class ModuleSpec:
+    name: str
+    addons_path: Path
+    summary: str = ""
+    depends: tuple[str, ...] = ("base",)
+    author: str = ""
+    version: str = "17.0.1.0.0"
+    license: str = "LGPL-3"
+    category: str = "Uncategorized"
+    application: bool = False
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    name: str                                  # e.g. "library.book"
+    module: str                                # module that gets the edit
+    description: str = ""
+    kind: str = "Model"                        # Model | TransientModel | AbstractModel
+    inherit: tuple[str, ...] = ()              # extension parents (no _name => in-place)
+    fields: tuple[FieldSpec, ...] = ()
+    with_views: bool = True
+    with_access: bool = True
+    with_menu: bool = True
+
+
+@dataclass(frozen=True)
+class ViewSpec:
+    model: str
+    kind: str                                  # form | list | kanban | search
+    module: str
+    inherit_xmlid: str | None = None           # inherit an existing view
+    fields: tuple[str, ...] = ()               # explicit fields; else engine picks
+
+
+@dataclass(frozen=True)
+class ReportSpec:
+    name: str                                  # e.g. "book_card" -> report/book_card_report.xml
+    module: str
+    model: str                                 # the report's model (docs)
+    title: str = ""
+
+
+@dataclass(frozen=True)
+class ControllerSpec:
+    name: str                                  # e.g. "library" -> LibraryController
+    module: str
+    route: str | None = None                   # default "/<module>/<name>"
+    auth: str = "user"                         # user | public | none
+
+
+@dataclass(frozen=True)
+class MenuSpec:
+    label: str
+    module: str
+    parent: str | None = None                  # parent menu xmlid
+    model: str | None = None                   # create a window action for this model
+    action: str | None = None                  # existing action xmlid
+
+
+# --------------------------------------------------------------------------- #
+# Reports (Phase 4/6)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class HealthReport:
+    score: int                                 # 0..100
+    grade: str                                 # A..F
+    diagnostics: list[Diagnostic] = dc_field(default_factory=list)
+    by_severity: dict[str, int] = dc_field(default_factory=dict)
+    by_category: dict[str, int] = dc_field(default_factory=dict)   # code prefix -> count
+    resolution: dict[str, int] = dc_field(default_factory=dict)    # Resolution -> field count
+    stats: dict[str, int] = dc_field(default_factory=dict)         # modules/models/views/...
+    recommendations: list[str] = dc_field(default_factory=list)
+    runtime: "DoctorReport | None" = None
+
+
+# --------------------------------------------------------------------------- #
+# Runtime-composed data (Phase 6). The runtime PRODUCES these (it may import
+# contracts); the engine CONSUMES them — it never imports the runtime (C7).
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class DbField:
+    name: str
+    type: str                                  # odoo ttype, e.g. "many2one"
+    relation: str | None = None
+    required: bool = False
+    store: bool = True
+    modules: tuple[str, ...] = ()              # ir.model.fields.modules
+
+
+@dataclass(frozen=True)
+class DbModel:
+    name: str
+    fields: dict[str, DbField] = dc_field(default_factory=dict)
+    modules: tuple[str, ...] = ()
+    transient: bool = False
+
+
+@dataclass(frozen=True)
+class DbSnapshot:
+    database: str
+    models: dict[str, DbModel] = dc_field(default_factory=dict)
+    installed_modules: dict[str, str] = dc_field(default_factory=dict)   # name -> state
+    xmlids: tuple[str, ...] = ()               # ir.model.data complete names
+
+
+@dataclass(frozen=True)
+class InstallProbe:
+    """Raw result of a fresh-install run (runtime-produced)."""
+    database: str
+    modules: tuple[str, ...]
+    returncode: int
+    log: str = ""
+    command: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DoctorReport:
+    database: str
+    modules: tuple[str, ...]
+    ok: bool
+    diagnostics: list[Diagnostic] = dc_field(default_factory=list)
+    log_excerpt: str = ""
+
+
+@dataclass(frozen=True)
+class UpgradeReport:
+    source: str                                # detected/declared version
+    target: str
+    diagnostics: list[Diagnostic] = dc_field(default_factory=list)
+    stats: dict[str, int] = dc_field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# Where-used (`why` / `impact`, RFC §7/§14) — one index query; clients choose
+# the verbosity (terse counts vs the detailed reference list).
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class UsageReport:
+    target: str
+    model: str | None
+    field: str | None = None
+    known: bool = False                  # target resolved to a model/field we know
+    resolution: Resolution = Resolution.STATIC
+    definition: Location | None = None   # where the model/field is declared
+    defined_in: list[str] = dc_field(default_factory=list)   # contributing modules
+    by_kind: dict[str, int] = dc_field(default_factory=dict)
+    references: list[Reference] = dc_field(default_factory=list)
+    message: str = ""                    # why it isn't known, what to do next

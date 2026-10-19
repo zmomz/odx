@@ -1,0 +1,163 @@
+{#- XML record fragments. Each macro renders one or more top-level records,
+    indented for direct placement inside <odoo>. -#}
+{% macro form_view(id, model, title, fields, wizard=False, confirm=None) %}
+    <record id="{{ id|xa }}" model="ir.ui.view">
+        <field name="name">{{ model|xml }}.form</field>
+        <field name="model">{{ model|xml }}</field>
+        <field name="arch" type="xml">
+            <form string="{{ title|xa }}">
+{% if wizard %}
+                <group>
+{% for f, t in fields %}
+                    <field name="{{ f|xa }}"/>
+{% endfor %}
+                </group>
+                <footer>
+{% if confirm %}
+                    <button name="{{ confirm|xa }}" string="Confirm" type="object" class="btn-primary"/>
+{% endif %}
+                    <button string="Cancel" special="cancel" class="btn-secondary"/>
+                </footer>
+{% else %}
+                <sheet>
+                    <group>
+{% for f, t in fields if t not in ('One2many', 'Many2many') %}
+                        <field name="{{ f|xa }}"/>
+{% endfor %}
+                    </group>
+{% set x2m = fields|selectattr(1, 'in', ['One2many', 'Many2many'])|list %}
+{% if x2m %}
+                    <notebook>
+{% for f, t in x2m %}
+                        <page string="{{ f|humanize|xa }}" name="{{ f|xa }}">
+                            <field name="{{ f|xa }}"/>
+                        </page>
+{% endfor %}
+                    </notebook>
+{% endif %}
+                </sheet>
+{% endif %}
+            </form>
+        </field>
+    </record>
+{% endmacro %}
+
+{% macro list_view(id, model, title, fields, tag) %}
+    <record id="{{ id|xa }}" model="ir.ui.view">
+        <field name="name">{{ model|xml }}.{{ tag }}</field>
+        <field name="model">{{ model|xml }}</field>
+        <field name="arch" type="xml">
+            <{{ tag }} string="{{ title|xa }}">
+{% for f, t in fields if t not in ('One2many', 'Many2many', 'Text', 'Html', 'Binary') %}
+                <field name="{{ f|xa }}"/>
+{% endfor %}
+            </{{ tag }}>
+        </field>
+    </record>
+{% endmacro %}
+
+{% macro search_view(id, model, title, fields) %}
+    <record id="{{ id|xa }}" model="ir.ui.view">
+        <field name="name">{{ model|xml }}.search</field>
+        <field name="model">{{ model|xml }}</field>
+        <field name="arch" type="xml">
+            <search string="{{ title|xa }}">
+{% for f, t in fields if t in ('Char', 'Text', 'Many2one', 'Selection', 'Integer', 'Many2many') %}
+                <field name="{{ f|xa }}"/>
+{% endfor %}
+            </search>
+        </field>
+    </record>
+{% endmacro %}
+
+{% macro kanban_view(id, model, title, fields, card) %}
+    <record id="{{ id|xa }}" model="ir.ui.view">
+        <field name="name">{{ model|xml }}.kanban</field>
+        <field name="model">{{ model|xml }}</field>
+        <field name="arch" type="xml">
+            <kanban string="{{ title|xa }}">
+{% if card %}
+                <templates>
+                    <t t-name="card">
+{% for f, t in fields if t not in ('One2many', 'Many2many', 'Binary', 'Html') %}
+                        <field name="{{ f|xa }}"/>
+{% endfor %}
+                    </t>
+                </templates>
+{% else %}
+{% for f, t in fields if t not in ('One2many', 'Many2many', 'Binary', 'Html') %}
+                <field name="{{ f|xa }}"/>
+{% endfor %}
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_global_click">
+{% for f, t in fields if t not in ('One2many', 'Many2many', 'Binary', 'Html') %}
+                            <div><field name="{{ f|xa }}"/></div>
+{% endfor %}
+                        </div>
+                    </t>
+                </templates>
+{% endif %}
+            </kanban>
+        </field>
+    </record>
+{% endmacro %}
+
+{% macro inherit_view(id, model, inherit_ref, expr, position, fields) %}
+    <record id="{{ id|xa }}" model="ir.ui.view">
+        <field name="name">{{ model|xml }}.inherit.{{ id|xml }}</field>
+        <field name="model">{{ model|xml }}</field>
+        <field name="inherit_id" ref="{{ inherit_ref|xa }}"/>
+        <field name="arch" type="xml">
+            <xpath expr="{{ expr|xa }}" position="{{ position|xa }}">
+{% for f in fields %}
+                <field name="{{ f|xa }}"/>
+{% else %}
+                <!-- TODO: add your fields / elements here -->
+{% endfor %}
+            </xpath>
+        </field>
+    </record>
+{% endmacro %}
+
+{% macro action(id, name, model, view_mode, target=None) %}
+    <record id="{{ id|xa }}" model="ir.actions.act_window">
+        <field name="name">{{ name|xml }}</field>
+        <field name="res_model">{{ model|xml }}</field>
+        <field name="view_mode">{{ view_mode|xml }}</field>
+{% if target %}
+        <field name="target">{{ target|xml }}</field>
+{% endif %}
+    </record>
+{% endmacro %}
+
+{% macro menuitem(id, name, parent=None, action=None, sequence=10) %}
+    <menuitem id="{{ id|xa }}" name="{{ name|xa }}"{% if parent %} parent="{{ parent|xa }}"{% endif %}{% if action %} action="{{ action|xa }}"{% endif %} sequence="{{ sequence }}"/>
+{% endmacro %}
+
+{% macro report(id, template_id, module, name, model, binding=None) %}
+    <record id="{{ id|xa }}" model="ir.actions.report">
+        <field name="name">{{ name|xml }}</field>
+        <field name="model">{{ model|xml }}</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">{{ module|xml }}.{{ template_id|xml }}</field>
+        <field name="report_file">{{ module|xml }}.{{ template_id|xml }}</field>
+        <field name="print_report_name">{{ (name ~ ' - %s')|py|xml }} % (object.display_name)</field>
+{% if binding %}
+        <field name="binding_model_id" ref="{{ binding|xa }}"/>
+        <field name="binding_type">report</field>
+{% endif %}
+    </record>
+
+    <template id="{{ template_id|xa }}">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="doc">
+                <t t-call="web.external_layout">
+                    <div class="page">
+                        <h2 t-out="doc.display_name"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+{% endmacro %}
